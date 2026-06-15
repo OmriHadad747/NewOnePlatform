@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# transcript_ingested, email_reply_received, manual_edit: raw input -- a
+# transcript_ingested, email_reply_received, manual_note: raw input -- a
 #   transcript, an email reply, or a note typed directly into the platform
 #   by a participant. All three are extraction input; none of them carry
 #   deltas and none affect the projection.
@@ -20,18 +20,43 @@ from pathlib import Path
 # human_approval: the only event type whose payload (`deltas`, `actions`)
 #   affects the projection -- the single gate where proposed facts/actions
 #   become state.
+# email_sent, reminder_sent, ticket_opened, flag_raised,
+#   report_to_management: outbound events -- a record of the agent acting
+#   on the world (execution is a stub in Phase 1; these just log what would
+#   be sent/opened/raised). `email_sent`/`reminder_sent` come from
+#   `info_request` actions, which execute as soon as they're proposed (no
+#   approval needed); the rest come from `consequential` actions, which
+#   execute only once a `human_approval` applies them. None of these affect
+#   the projection -- they're logged for the audit trail, like raw input.
 EVENT_TYPES = {
     "transcript_ingested",
     "email_reply_received",
-    "manual_edit",
+    "manual_note",
     "agent_proposal",
     "human_approval",
+    "email_sent",
+    "reminder_sent",
+    "ticket_opened",
+    "flag_raised",
+    "report_to_management",
 }
 
 # Raw-input event types: text added to the log by a person or integration
 # (a transcript, an email reply, a typed note). These are the events the
 # extraction step reads from; none of them affect the projection.
-RAW_INPUT_TYPES = {"transcript_ingested", "email_reply_received", "manual_edit"}
+RAW_INPUT_TYPES = {"transcript_ingested", "email_reply_received", "manual_note"}
+
+# Outbound event types: a record of the agent acting on the world (sending
+# an email/reminder, opening a ticket, raising a flag, reporting to
+# management). Like raw input, these have no effect on the projection --
+# see the comment on EVENT_TYPES above for the auto vs. gated split.
+OUTBOUND_EVENT_TYPES = {
+    "email_sent",
+    "reminder_sent",
+    "ticket_opened",
+    "flag_raised",
+    "report_to_management",
+}
 
 
 @dataclass

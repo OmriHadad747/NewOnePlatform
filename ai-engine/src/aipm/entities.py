@@ -25,6 +25,32 @@ ENTITY_TYPES = {
 # escalating to management, raising flags) require human approval.
 ACTION_CATEGORIES = {"info_request", "consequential"}
 
+# Action types the agent may propose, and the outbound event type that
+# records each one's (stubbed) execution -- immediately for `info_request`
+# actions, or once a `human_approval` applies a `consequential` one. See
+# `aipm.events` for the outbound event types themselves.
+ACTION_TYPE_OUTBOUND_EVENTS = {
+    "send_email": "email_sent",
+    "send_reminder": "reminder_sent",
+    "open_ticket": "ticket_opened",
+    "raise_flag": "flag_raised",
+    "escalate_to_management": "report_to_management",
+}
+
+# Fallback outbound event type, by category, for an action `type` not in
+# ACTION_TYPE_OUTBOUND_EVENTS above (e.g. a novel verb the model proposed).
+_DEFAULT_OUTBOUND_EVENT_BY_CATEGORY = {
+    "info_request": "email_sent",
+    "consequential": "report_to_management",
+}
+
+
+def outbound_event_type(action_type: str, category: str) -> str:
+    """The outbound event type that records an action's (stubbed) execution."""
+    return ACTION_TYPE_OUTBOUND_EVENTS.get(
+        action_type, _DEFAULT_OUTBOUND_EVENT_BY_CATEGORY[category]
+    )
+
 
 @dataclass
 class ProvenanceRecord:

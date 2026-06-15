@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aipm.entities import ACTION_CATEGORIES, ENTITY_TYPES
+from aipm.entities import ACTION_CATEGORIES, ACTION_TYPE_OUTBOUND_EVENTS, ENTITY_TYPES
 from aipm.state import ProjectState
 
 # The stable, cacheable instruction block. Keep this deterministic -- any
@@ -34,9 +34,10 @@ Rules:
 - Keep entity ids short, lowercase, hyphenated, and stable across events.
 - Propose an action only when the text implies the agent should DO something.
   Use category `info_request` for routine info-gathering the agent can send on
-  its own (e.g. emailing a teammate for an update or a transcript). Use
-  category `consequential` for things that need human sign-off (opening
-  tickets, escalating to management, raising flags).
+  its own, with type `send_email` or `send_reminder` (e.g. emailing a teammate
+  for an update or a transcript). Use category `consequential` for things that
+  need human sign-off, with type `open_ticket`, `raise_flag`, or
+  `escalate_to_management`.
 
 Output STRICT JSON, no prose, in exactly this shape:
 {
@@ -52,7 +53,7 @@ Output STRICT JSON, no prose, in exactly this shape:
   ],
   "actions": [
     {
-      "type": "<short verb, e.g. send_email>",
+      "type": <one of the action types below>,
       "category": "info_request" | "consequential",
       "payload": { ... },
       "source_span": "<verbatim quote from the raw text>",
@@ -76,7 +77,12 @@ class ExtractionPrompt:
 def _vocabulary() -> str:
     entity_types = ", ".join(sorted(ENTITY_TYPES))
     categories = ", ".join(sorted(ACTION_CATEGORIES))
-    return f"Entity types: {entity_types}.\nAction categories: {categories}."
+    action_types = ", ".join(sorted(ACTION_TYPE_OUTBOUND_EVENTS))
+    return (
+        f"Entity types: {entity_types}.\n"
+        f"Action categories: {categories}.\n"
+        f"Action types: {action_types}."
+    )
 
 
 def build_prefix() -> str:

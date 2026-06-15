@@ -152,13 +152,13 @@ def test_non_delta_events_have_no_effect_on_state():
     assert all(table == {} for table in state.entities.values())
 
 
-def test_manual_edit_with_deltas_has_no_effect_on_state():
-    """manual_edit is raw input (a person typing a new note into the
+def test_manual_note_with_deltas_has_no_effect_on_state():
+    """manual_note is raw input (a person typing a new note into the
     platform), not an approval -- its deltas, if any, must be ignored."""
     events = [
         Event(
             id="evt_1",
-            type="manual_edit",
+            type="manual_note",
             timestamp="2025-01-01T00:00:00Z",
             source="note",
             raw_text="Decided to use Postgres.",

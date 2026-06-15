@@ -24,7 +24,7 @@ question testable -- no LLM yet.
 
 Event types:
 
-- `transcript_ingested`, `email_reply_received`, `manual_edit` -- raw
+- `transcript_ingested`, `email_reply_received`, `manual_note` -- raw
   input: a meeting transcript, an email reply, or a note typed directly
   into the platform by a participant. All three are extraction input for
   a later phase; none of them carry deltas and none affect state.
@@ -34,19 +34,29 @@ Event types:
   This is the single gate where proposed facts/actions become fact: the
   agent never mutates state directly, only an approved `human_approval`
   event does.
+- `email_sent`, `reminder_sent`, `ticket_opened`, `flag_raised`,
+  `report_to_management` -- outbound events: a record of the agent acting
+  on the world. Execution is a stub in Phase 1, so these just log what
+  would be sent/opened/raised, with no effect on the projection. See the
+  auto vs. gated split below.
 
 A `human_approval` payload has two parts, both optional:
 
 - `deltas: []` -- `create`/`update` operations against entity tables, each
   `{op, entity_type, entity_id, fields, provenance}`.
-- `actions: []` -- proposed actions, each `{type, category, payload,
-  provenance}` where `category` is `info_request` (routine
-  info-gathering, e.g. emailing a teammate for an update -- the agent
-  sends these on its own, no approval needed in practice) or
-  `consequential` (opening tickets, escalating to management, raising
-  flags -- these are what `human_approval` actually gates). Approved
-  actions are recorded in `ProjectState.actions` for an audit trail; in
-  Phase 1 there is no executor, so recording is all that happens.
+- `actions: []` -- approved `consequential` actions, each `{type, category,
+  payload, provenance}` (`type` one of `open_ticket`, `raise_flag`,
+  `escalate_to_management`). Recorded in `ProjectState.actions` for an
+  audit trail, and -- in the backend -- executed (stub) and logged as a
+  `ticket_opened`/`flag_raised`/`report_to_management` event.
+
+`info_request` actions (`send_email`, `send_reminder`) never go through
+`human_approval`: the agent sends these routine info-gathering messages on
+its own as soon as they're proposed, logging an `email_sent`/
+`reminder_sent` event immediately. `aipm.entities.outbound_event_type()`
+maps an action's `type` to its outbound event type; this routing (and the
+auto vs. gated split) is applied by the backend's `/extract` and
+`/proposals/{id}/approve` endpoints -- see `backend/README.md`.
 
 ## Extraction core (Step 3)
 

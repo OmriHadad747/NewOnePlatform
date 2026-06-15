@@ -1,15 +1,19 @@
 name: action_proposals
 description: >
-  A participant types a note about a vendor delay (manual_edit -- raw
+  A participant types a note about a vendor delay (manual_note -- raw
   input, no projection effect). The agent then proposes, and a human
   approves, both a state delta (new risk) and two actions: an info_request
-  (the agent emailing a teammate for an update -- auto-sent, no approval
-  needed in practice) and a consequential action (escalating to
-  management -- the kind of action this approval event represents).
+  (the agent emailing a teammate for an update) and a consequential action
+  (escalating to management). This scenario exercises the projection's
+  general ability to record approved actions of either category; the
+  backend layers the auto-vs-gated split on top (info_request actions
+  execute -- and log an email_sent/reminder_sent event -- as soon as
+  they're proposed, with no human_approval; consequential actions still
+  require human_approval, recorded here).
 
 events:
   - id: evt_001
-    type: manual_edit
+    type: manual_note
     timestamp: "2025-02-03T09:00:00Z"
     source: pm_note
     raw_text: "Bob mentioned the vendor API access is delayed again."

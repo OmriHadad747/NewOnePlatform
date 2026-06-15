@@ -14,10 +14,11 @@ from aipm.state import ProjectState
 
 # `human_approval` is the only event type whose payload changes state -- the
 # single gate where proposed facts/actions become fact. All other event types
-# (transcript_ingested, email_reply_received, manual_edit, agent_proposal) are
-# raw input: a person or the agent adding a new transcript/email/note/proposal
-# to the log. They carry no deltas and have no effect on the projection; they
-# become extraction input in a later phase.
+# (transcript_ingested, email_reply_received, manual_note, agent_proposal, and
+# the outbound event types -- email_sent, reminder_sent, ticket_opened,
+# flag_raised, report_to_management) are logged as-is and have no effect on
+# the projection: raw input becomes extraction input, and outbound events are
+# just an audit trail of what the agent sent/opened/raised.
 STATE_CHANGING_EVENT_TYPES = {"human_approval"}
 
 DELTA_OPS = {"create", "update"}

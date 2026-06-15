@@ -112,7 +112,7 @@ def test_unknown_event_type_is_rejected(client):
 def _raw_event(event_id, text):
     return {
         "id": event_id,
-        "type": "manual_edit",
+        "type": "manual_note",
         "timestamp": "2025-02-03T09:00:00Z",
         "source": "pm_note",
         "raw_text": text,
@@ -184,7 +184,7 @@ def test_proposals_then_approve_applies_to_state(client):
             ],
             actions=[
                 ProposedAction(
-                    "send_email", "info_request", {"to": "bob"},
+                    "escalate_to_management", "consequential", {"to": "director"},
                     source_span="The vendor API access is delayed again",
                 )
             ],
@@ -193,6 +193,7 @@ def test_proposals_then_approve_applies_to_state(client):
 
     proposal = client.post("/extract", json={"source_event_id": "raw_1"}).json()["proposal"]
     proposal_id = proposal["id"]
+    assert proposal["payload"]["actions"][0]["category"] == "consequential"
 
     pending = client.get("/proposals").json()
     assert [p["id"] for p in pending] == [proposal_id]
@@ -204,10 +205,45 @@ def test_proposals_then_approve_applies_to_state(client):
     state = client.get("/state").json()
     assert state["Risk"]["vendor-delay"]["fields"]["severity"] == "high"
     assert len(state["actions"]) == 1
-    assert state["actions"][0]["category"] == "info_request"
+    assert state["actions"][0]["category"] == "consequential"
+
+    # approving a consequential action logs its (stubbed) outbound event
+    events = client.get("/events").json()
+    assert any(e["type"] == "report_to_management" for e in events)
 
     # once approved it no longer shows as pending
     assert client.get("/proposals").json() == []
+
+
+def test_extract_auto_executes_info_request_actions(client):
+    raw = "Bob mentioned the vendor API access is delayed again."
+    client.post("/events", json=_raw_event("raw_1", raw))
+    _use_provider(
+        ExtractionResult(
+            actions=[
+                ProposedAction(
+                    "send_email", "info_request", {"to": "bob", "subject": "Update?"},
+                    source_span="the vendor API access is delayed again",
+                )
+            ],
+        )
+    )
+
+    body = client.post("/extract", json={"source_event_id": "raw_1"}).json()
+
+    # info_request actions execute immediately, leaving nothing for a human
+    # to review -- no agent_proposal is written
+    assert body["proposal"] is None
+    assert len(body["executed"]) == 1
+    assert body["executed"][0]["type"] == "email_sent"
+    assert body["executed"][0]["payload"]["payload"]["to"] == "bob"
+
+    events = client.get("/events").json()
+    assert any(e["type"] == "email_sent" for e in events)
+
+    # no human_approval needed -- nothing pending, and state.actions is empty
+    assert client.get("/proposals").json() == []
+    assert client.get("/state").json()["actions"] == []
 
 
 def test_approve_unknown_proposal_is_404(client):

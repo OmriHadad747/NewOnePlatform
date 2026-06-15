@@ -48,6 +48,30 @@ A `human_approval` payload has two parts, both optional:
   actions are recorded in `ProjectState.actions` for an audit trail; in
   Phase 1 there is no executor, so recording is all that happens.
 
+## Extraction core (Step 3)
+
+The first place the LLM enters. This package holds only the **pure,
+deterministic** parts of extraction -- no network, no model calls. Concrete
+providers (Gemini, Claude) that actually call a model live in `backend/`,
+keeping this library's "no network surface" contract intact.
+
+- **types** -- `ProposedDelta`, `ProposedAction`, `ExtractionResult`. What a
+  provider proposes from a raw event. `to_payload()` renders a result into
+  the exact `{deltas, actions}` event-payload shape the projection expects,
+  so an approved proposal applies with no translation.
+- **prompt** -- builds the prompt in two parts: a stable, cacheable **prefix**
+  (instructions + output schema + vocabulary) and a per-call **suffix**
+  (current-state summary + raw event text). Provider-agnostic; each provider
+  decides how to cache the prefix.
+- **grounding** -- the safety net. Every proposal must cite a verbatim
+  `source_span` from the raw text; `check_grounding()` / `filter_grounded()`
+  verify that in plain Python (no model) and drop anything ungrounded. This is
+  what stops the model from inventing facts.
+- **providers** -- the `ExtractionProvider` protocol plus the routing seam: a
+  `CATALOG` of provider descriptors and a pure `select_provider()` policy
+  ("which provider should the agent use?"). Today it's "cheapest available";
+  a future agent can make it smarter without touching network code.
+
 ## Project layout
 
 ```
@@ -56,6 +80,7 @@ src/aipm/
   entities.py      # Entity, ProvenanceRecord, Action models
   state.py          # ProjectState (entity tables + actions)
   projection.py     # apply_event(), project()
+  extraction/       # pure extraction core: types, prompt, grounding, providers
 scenarios/          # replay scenarios (fixed event sequences + checkpoints)
 tests/               # unit tests + the replay/eval harness
 ```

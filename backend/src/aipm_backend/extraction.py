@@ -9,12 +9,26 @@ no-network ai-engine library.
 from __future__ import annotations
 
 import json
+import re
 
 from aipm.extraction import ExtractionResult
 from aipm.extraction.prompt import ExtractionPrompt
 from aipm.extraction.providers import ExtractionProvider
 
 from aipm_backend import config
+
+
+def parse_extraction_json(text: str) -> ExtractionResult:
+    """Parse a model's JSON reply into an ExtractionResult.
+
+    Tolerates a leading/trailing ```json fence in case a provider wraps its
+    output, then defers to ExtractionResult.from_dict.
+    """
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    return ExtractionResult.from_dict(json.loads(text))
 
 
 class GeminiProvider:
@@ -42,7 +56,40 @@ class GeminiProvider:
                 response_mime_type="application/json",
             ),
         )
-        return ExtractionResult.from_dict(json.loads(response.text))
+        return parse_extraction_json(response.text)
+
+
+class ClaudeProvider:
+    """Extraction via Anthropic Claude (default: Haiku). The SDK is imported
+    lazily so the backend and tests work without `anthropic` installed."""
+
+    name = "claude"
+
+    def __init__(self, api_key: str, model: str) -> None:
+        self._api_key = api_key
+        self._model = model
+
+    def extract(self, prompt: ExtractionPrompt) -> ExtractionResult:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=self._api_key)
+        response = client.messages.create(
+            model=self._model,
+            max_tokens=8192,
+            # The stable prefix goes in `system` with a cache breakpoint, so a
+            # repeated prefix is billed once (caching kicks in once the prefix
+            # crosses the model's minimum cacheable size).
+            system=[
+                {
+                    "type": "text",
+                    "text": prompt.prefix,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": prompt.suffix}],
+        )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        return parse_extraction_json(text)
 
 
 class StaticProvider:
@@ -66,6 +113,13 @@ def build_provider(name: str | None = None) -> ExtractionProvider:
                 "GEMINI_API_KEY (or GOOGLE_API_KEY) is not set; cannot use the gemini provider"
             )
         return GeminiProvider(key, config.gemini_model())
+    if name == "claude":
+        key = config.claude_api_key()
+        if not key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY is not set; cannot use the claude provider"
+            )
+        return ClaudeProvider(key, config.claude_model())
     raise ValueError(f"unknown extraction provider: {name!r}")
 
 

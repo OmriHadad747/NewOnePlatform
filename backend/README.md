@@ -43,16 +43,26 @@ concrete network providers and these endpoints.
 
 ## Configuration (extraction)
 
-Copy `.env.example` to `.env` (loaded automatically if `python-dotenv` is
-installed) and set:
+Two providers ship today, both behind the same `ExtractionProvider` contract:
 
-- `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) -- required for live extraction.
-- `AIPM_GEMINI_MODEL` -- defaults to `gemini-2.5-flash`.
-- `AIPM_EXTRACTION_PROVIDER` -- defaults to the cheapest in the catalog
-  (`gemini`).
+- **`claude`** -- Anthropic Claude (default model `claude-haiku-4-5`). Needs
+  `ANTHROPIC_API_KEY`; override the model with `AIPM_CLAUDE_MODEL`.
+- **`gemini`** -- Google Gemini (default model `gemini-2.5-flash`). Needs
+  `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); override with `AIPM_GEMINI_MODEL`.
+
+`AIPM_EXTRACTION_PROVIDER` chooses which one `/extract` uses; it defaults to
+the cheapest in the catalog (`gemini`). Set it to `claude` to extract via
+Claude Haiku. Each provider sends the stable prompt prefix in its own cache
+channel (Claude: a `cache_control` system block; Gemini: implicit prefix
+caching) so the instructions are billed once.
+
+Copy `.env.example` to `.env` (loaded automatically if `python-dotenv` is
+installed) and fill in the key for whichever provider you're using.
 
 Tests never hit the network: they inject a `StaticProvider` via FastAPI's
-dependency override, so the extract/approve flow is covered deterministically.
+dependency override, so the extract/approve flow is covered deterministically,
+and the provider layer's own logic (JSON parsing, provider selection) is
+unit-tested without a model call.
 
 ## Storage
 

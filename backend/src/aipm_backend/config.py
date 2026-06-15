@@ -27,3 +27,11 @@ def gemini_api_key() -> str | None:
 
 def gemini_model() -> str:
     return os.environ.get("AIPM_GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def claude_api_key() -> str | None:
+    return os.environ.get("ANTHROPIC_API_KEY")
+
+
+def claude_model() -> str:
+    return os.environ.get("AIPM_CLAUDE_MODEL", "claude-haiku-4-5")

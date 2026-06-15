@@ -36,10 +36,13 @@ src/aipm/
   entities.py      # Entity + ProvenanceRecord models
   state.py          # ProjectState
   projection.py     # apply_event(), project()
-  cli.py            # inspect the projected state of an event log
 scenarios/          # replay scenarios (fixed event sequences + checkpoints)
 tests/               # unit tests + the replay/eval harness
 ```
+
+This is a pure library with no I/O beyond reading/writing JSONL event
+logs, and no network surface. `backend/` depends on it directly (in
+process) and exposes it over HTTP.
 
 ## Running the tests
 
@@ -54,12 +57,3 @@ The eval harness (`tests/test_replay.py`) replays each scenario in
 matches the expected values. This is the validation harness referenced in
 the project goal -- later phases swap the hand-written deltas for
 AI-generated ones and run the same scenarios.
-
-## Inspecting state
-
-```
-cd ai-engine
-python -m aipm.cli path/to/events.jsonl
-```
-
-Prints the current projected state as JSON.

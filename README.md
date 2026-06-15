@@ -8,11 +8,18 @@ human to approve.
 This is a monorepo. Each top-level directory is a separate component with
 its own setup/build:
 
-- **`ai-engine/`** -- the horizontal reconciliation engine (event log,
-  deterministic state projection, replay/eval harness). This is where
-  Phase 1 lives. See [`ai-engine/README.md`](ai-engine/README.md).
-- **`backend/`** -- API/service layer (not yet started).
-- **`frontend/`** -- dashboard UI (not yet started).
+- **`ai-engine/`** -- the horizontal reconciliation engine: event log
+  model, deterministic state projection, replay/eval harness. A pure
+  library with no I/O/network surface. See
+  [`ai-engine/README.md`](ai-engine/README.md).
+- **`backend/`** -- API service that wraps `ai-engine` (in-process) and
+  owns the event log storage. The only thing other components talk to.
+  See [`backend/README.md`](backend/README.md).
+- **`cli/`** -- thin client for `backend`'s API; the Phase 1 "surface" for
+  feeding in events and inspecting/replaying project state. See
+  [`cli/README.md`](cli/README.md).
+- **`frontend/`** -- dashboard UI (not yet started; will talk to
+  `backend` the same way `cli/` does).
 
 ## Phase 1
 

@@ -1,12 +1,13 @@
 # AI Project-Manager Agent
 
 An AI agent that acts as a project manager's force-multiplier: it ingests
-project events (transcripts, emails, manual edits) and maintains one
-accurate, conflict-aware picture of project state, proposing actions for a
-human to approve.
+project events (transcripts, emails, manual notes) and maintains one
+accurate, conflict-aware picture of project state. It never mutates that
+state directly -- it proposes changes and actions, and only a human
+approval applies them.
 
-This is a monorepo. Each top-level directory is a separate component with
-its own setup/build:
+This is a monorepo. Each component lives in its own top-level directory
+with its own setup/build:
 
 - **`ai-engine/`** -- the horizontal reconciliation engine: event log
   model, deterministic state projection, replay/eval harness. A pure
@@ -18,7 +19,7 @@ its own setup/build:
 - **`cli/`** -- thin client for `backend`'s API; the Phase 1 "surface" for
   feeding in events and inspecting/replaying project state. See
   [`cli/README.md`](cli/README.md).
-- **`frontend/`** -- dashboard UI (not yet started; will talk to
+- **`frontend/`** -- dashboard UI (planned, no directory yet; will talk to
   `backend` the same way `cli/` does).
 
 ## Phase 1

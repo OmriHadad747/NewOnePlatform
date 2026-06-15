@@ -1,8 +1,9 @@
 """Deterministic projection: event log -> ProjectState.
 
-`project()` folds over the event log in order, applying each event's
-deltas to a fresh ProjectState. Running it over the same events always
-produces the same state -- this is what makes replay testing possible.
+`project()` folds over the event log in order, applying the payload of each
+state-changing event (deltas and actions) to a fresh ProjectState. Running
+it over the same events always produces the same state -- this is what makes
+replay testing possible.
 """
 
 from __future__ import annotations
@@ -11,12 +12,13 @@ from aipm.entities import ACTION_CATEGORIES, ENTITY_TYPES, Action, Entity, Prove
 from aipm.events import Event
 from aipm.state import ProjectState
 
-# `human_approval` is the only event type whose payload mutates state. All
-# other event types (transcript_ingested, email_reply_received, manual_edit,
-# agent_proposal) are raw input -- a person or the agent adding a new
-# transcript/email/note/proposal to the log -- and have no effect on the
-# projection in Phase 1. They become extraction input in a later phase.
-DELTA_EVENT_TYPES = {"human_approval"}
+# `human_approval` is the only event type whose payload changes state -- the
+# single gate where proposed facts/actions become fact. All other event types
+# (transcript_ingested, email_reply_received, manual_edit, agent_proposal) are
+# raw input: a person or the agent adding a new transcript/email/note/proposal
+# to the log. They carry no deltas and have no effect on the projection; they
+# become extraction input in a later phase.
+STATE_CHANGING_EVENT_TYPES = {"human_approval"}
 
 DELTA_OPS = {"create", "update"}
 
@@ -33,7 +35,7 @@ def project(events: list[Event]) -> ProjectState:
 
 
 def apply_event(state: ProjectState, event: Event) -> None:
-    if event.type in DELTA_EVENT_TYPES:
+    if event.type in STATE_CHANGING_EVENT_TYPES:
         for delta in event.payload.get("deltas", []):
             apply_delta(state, delta, event)
         for action in event.payload.get("actions", []):

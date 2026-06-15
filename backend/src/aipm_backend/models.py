@@ -19,6 +19,11 @@ class EventIn(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class ExtractRequest(BaseModel):
+    # The id of a raw-input event already in the log to extract from.
+    source_event_id: str
+
+
 def serialize_state(state: ProjectState) -> dict[str, Any]:
     """Render a ProjectState as JSON: one table per entity type, plus actions."""
     result: dict[str, Any] = {

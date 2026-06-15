@@ -1,12 +1,15 @@
 """CLI client for the backend API.
 
 Commands:
-  append <event.json>     -- POST an event to the backend
-  events                   -- GET the full event log
-  state                    -- GET the current projected state
-  replay <scenario.yaml>  -- post a scenario's events in order and check
-                              its checkpoints against the live backend
-                              (simulates a project end-to-end)
+  append <event.json>      -- POST an event to the backend
+  events                    -- GET the full event log
+  state                     -- GET the current projected state
+  replay <scenario.yaml>   -- post a scenario's events in order and check
+                               its checkpoints against the live backend
+                               (simulates a project end-to-end)
+  extract <event_id>        -- run extraction on a raw event (writes a proposal)
+  proposals                 -- list proposals awaiting approval
+  approve <proposal_id>     -- approve a proposal (applies it to state)
 """
 
 from __future__ import annotations
@@ -54,6 +57,31 @@ def cmd_events(client: httpx.Client) -> int:
 def cmd_state(client: httpx.Client) -> int:
     response = client.get("/state")
     response.raise_for_status()
+    print(json.dumps(response.json(), indent=2))
+    return 0
+
+
+def cmd_extract(client: httpx.Client, source_event_id: str) -> int:
+    response = client.post("/extract", json={"source_event_id": source_event_id})
+    if response.status_code >= 400:
+        print(f"Error: {response.json().get('detail')}", file=sys.stderr)
+        return 1
+    print(json.dumps(response.json(), indent=2))
+    return 0
+
+
+def cmd_proposals(client: httpx.Client) -> int:
+    response = client.get("/proposals")
+    response.raise_for_status()
+    print(json.dumps(response.json(), indent=2))
+    return 0
+
+
+def cmd_approve(client: httpx.Client, proposal_id: str) -> int:
+    response = client.post(f"/proposals/{proposal_id}/approve")
+    if response.status_code >= 400:
+        print(f"Error: {response.json().get('detail')}", file=sys.stderr)
+        return 1
     print(json.dumps(response.json(), indent=2))
     return 0
 
@@ -133,6 +161,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     replay_parser.add_argument("scenario_file")
 
+    extract_parser = subparsers.add_parser(
+        "extract", help="run extraction on a raw event (writes a proposal)"
+    )
+    extract_parser.add_argument("source_event_id")
+
+    subparsers.add_parser("proposals", help="list proposals awaiting approval")
+
+    approve_parser = subparsers.add_parser(
+        "approve", help="approve a proposal (applies it to state)"
+    )
+    approve_parser.add_argument("proposal_id")
+
     return parser
 
 
@@ -150,6 +190,12 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_state(client)
         if args.command == "replay":
             return cmd_replay(client, args.scenario_file)
+        if args.command == "extract":
+            return cmd_extract(client, args.source_event_id)
+        if args.command == "proposals":
+            return cmd_proposals(client)
+        if args.command == "approve":
+            return cmd_approve(client, args.proposal_id)
 
     return 1
 

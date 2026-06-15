@@ -24,7 +24,11 @@ with its own setup/build:
 
 ## Phase 1
 
-Phase 1's goal is to validate the AI engine's "memory" -- does it keep an
+Phase 1 first validates the AI engine's "memory" -- does it keep an
 accurate, conflict-aware project state across a long sequence of events --
-before any LLM/extraction work is built. See `ai-engine/README.md` for
+using a deterministic event log, projection, and replay/eval harness (no
+LLM). On that foundation it then layers **extraction** (Step 3): an LLM
+reads a raw event plus the current state and *proposes* grounded
+deltas/actions, which become an `agent_proposal` and only change state once
+a human approves. See `ai-engine/README.md` and `backend/README.md` for
 details.

@@ -5,6 +5,9 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from aipm.extraction.types import ExtractionResult, ProposedAction, ProposedDelta
+
+from aipm_backend.extraction import StaticProvider, get_provider
 from aipm_backend.main import app
 
 
@@ -12,6 +15,17 @@ from aipm_backend.main import app
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AIPM_EVENT_LOG", str(tmp_path / "events.jsonl"))
     return TestClient(app)
+
+
+def _use_provider(result: ExtractionResult):
+    """Override the extraction provider with a fixed-result fake."""
+    app.dependency_overrides[get_provider] = lambda: StaticProvider(result)
+
+
+@pytest.fixture(autouse=True)
+def _clear_overrides():
+    yield
+    app.dependency_overrides.clear()
 
 
 def _delta(op, entity_type, entity_id, fields, **prov):
@@ -90,3 +104,111 @@ def test_unknown_event_type_is_rejected(client):
     response = client.post("/events", json=bad_event)
 
     assert response.status_code == 400
+
+
+# --- extraction / approval flow ------------------------------------------
+
+
+def _raw_event(event_id, text):
+    return {
+        "id": event_id,
+        "type": "manual_edit",
+        "timestamp": "2025-02-03T09:00:00Z",
+        "source": "pm_note",
+        "raw_text": text,
+        "payload": {},
+    }
+
+
+def test_extract_writes_proposal_without_changing_state(client):
+    raw = "The vendor API access is delayed again."
+    client.post("/events", json=_raw_event("raw_1", raw))
+
+    _use_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "create", "Risk", "vendor-delay",
+                    {"description": "Vendor API delayed", "severity": "high"},
+                    source_span="The vendor API access is delayed again",
+                )
+            ]
+        )
+    )
+
+    response = client.post("/extract", json={"source_event_id": "raw_1"})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["proposal"]["type"] == "agent_proposal"
+    assert body["proposal"]["payload"]["deltas"][0]["entity_id"] == "vendor-delay"
+
+    # proposal does NOT change state
+    assert client.get("/state").json()["Risk"] == {}
+
+
+def test_extract_drops_ungrounded_proposals(client):
+    client.post("/events", json=_raw_event("raw_1", "The vendor API is delayed."))
+
+    _use_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta("create", "Risk", "real", {}, source_span="The vendor API is delayed"),
+                ProposedDelta("create", "Risk", "fake", {}, source_span="completely invented text"),
+            ]
+        )
+    )
+
+    body = client.post("/extract", json={"source_event_id": "raw_1"}).json()
+    kept = [d["entity_id"] for d in body["proposal"]["payload"]["deltas"]]
+    assert kept == ["real"]
+    assert len(body["dropped"]) == 1
+
+
+def test_extract_unknown_source_event_is_404(client):
+    _use_provider(ExtractionResult())
+    response = client.post("/extract", json={"source_event_id": "nope"})
+    assert response.status_code == 404
+
+
+def test_proposals_then_approve_applies_to_state(client):
+    raw = "The vendor API access is delayed again."
+    client.post("/events", json=_raw_event("raw_1", raw))
+    _use_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "create", "Risk", "vendor-delay",
+                    {"severity": "high", "status": "open"},
+                    source_span="The vendor API access is delayed again",
+                )
+            ],
+            actions=[
+                ProposedAction(
+                    "send_email", "info_request", {"to": "bob"},
+                    source_span="The vendor API access is delayed again",
+                )
+            ],
+        )
+    )
+
+    proposal = client.post("/extract", json={"source_event_id": "raw_1"}).json()["proposal"]
+    proposal_id = proposal["id"]
+
+    pending = client.get("/proposals").json()
+    assert [p["id"] for p in pending] == [proposal_id]
+
+    approve = client.post(f"/proposals/{proposal_id}/approve")
+    assert approve.status_code == 201
+    assert approve.json()["payload"]["approves"] == proposal_id
+
+    state = client.get("/state").json()
+    assert state["Risk"]["vendor-delay"]["fields"]["severity"] == "high"
+    assert len(state["actions"]) == 1
+    assert state["actions"][0]["category"] == "info_request"
+
+    # once approved it no longer shows as pending
+    assert client.get("/proposals").json() == []
+
+
+def test_approve_unknown_proposal_is_404(client):
+    assert client.post("/proposals/nope/approve").status_code == 404

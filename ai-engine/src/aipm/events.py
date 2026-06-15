@@ -28,6 +28,11 @@ EVENT_TYPES = {
     "human_approval",
 }
 
+# Raw-input event types: text added to the log by a person or integration
+# (a transcript, an email reply, a typed note). These are the events the
+# extraction step reads from; none of them affect the projection.
+RAW_INPUT_TYPES = {"transcript_ingested", "email_reply_received", "manual_edit"}
+
 
 @dataclass
 class Event:

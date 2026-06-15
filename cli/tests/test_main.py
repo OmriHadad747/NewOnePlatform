@@ -17,7 +17,16 @@ import pytest
 from aipm.events import Event
 from aipm.projection import ProjectionError, apply_event, project
 
-from aipm_cli.main import cmd_append, cmd_events, cmd_replay, cmd_state, _resolve
+from aipm_cli.main import (
+    cmd_append,
+    cmd_approve,
+    cmd_events,
+    cmd_extract,
+    cmd_proposals,
+    cmd_replay,
+    cmd_state,
+    _resolve,
+)
 
 SCENARIOS_DIR = Path(__file__).resolve().parent.parent.parent / "ai-engine" / "scenarios"
 
@@ -104,6 +113,50 @@ def test_cmd_append_error(tmp_path, capsys):
 
     assert cmd_append(client, str(event_file)) == 1
     assert "boom" in capsys.readouterr().err
+
+
+def test_cmd_extract_posts_source_event_and_prints(capsys):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"proposal": {"id": "prop_1"}, "dropped": []})
+
+    assert cmd_extract(_client(handler), "raw_1") == 0
+    assert seen["path"] == "/extract"
+    assert seen["body"] == {"source_event_id": "raw_1"}
+    assert json.loads(capsys.readouterr().out)["proposal"]["id"] == "prop_1"
+
+
+def test_cmd_extract_error(capsys):
+    client = _client(lambda r: httpx.Response(404, json={"detail": "not found"}))
+    assert cmd_extract(client, "nope") == 1
+    assert "not found" in capsys.readouterr().err
+
+
+def test_cmd_proposals_prints_list(capsys):
+    client = _client(lambda r: httpx.Response(200, json=[{"id": "prop_1"}]))
+    assert cmd_proposals(client) == 0
+    assert json.loads(capsys.readouterr().out) == [{"id": "prop_1"}]
+
+
+def test_cmd_approve_posts_and_prints(capsys):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        return httpx.Response(201, json={"id": "appr_1", "payload": {"approves": "prop_1"}})
+
+    assert cmd_approve(_client(handler), "prop_1") == 0
+    assert seen["path"] == "/proposals/prop_1/approve"
+    assert json.loads(capsys.readouterr().out)["payload"]["approves"] == "prop_1"
+
+
+def test_cmd_approve_error(capsys):
+    client = _client(lambda r: httpx.Response(404, json={"detail": "no proposal"}))
+    assert cmd_approve(client, "nope") == 1
+    assert "no proposal" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("scenario_path", sorted(SCENARIOS_DIR.glob("*.yaml")), ids=lambda p: p.stem)

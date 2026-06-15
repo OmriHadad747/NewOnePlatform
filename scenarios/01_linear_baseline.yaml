@@ -1,0 +1,73 @@
+name: linear_baseline
+description: >
+  A simple, conflict-free sequence: a project kicks off, an owner is
+  assigned, a task is created with a deadline, and a decision is recorded.
+
+events:
+  - id: evt_001
+    type: manual_edit
+    timestamp: "2025-01-06T09:00:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Owner
+          entity_id: alice
+          fields: {name: "Alice", role: "Backend engineer"}
+          provenance: {asserted_by: PM, source_span: "Alice will lead the backend work"}
+
+  - id: evt_002
+    type: manual_edit
+    timestamp: "2025-01-06T09:05:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Task
+          entity_id: build-auth-service
+          fields: {title: "Build auth service", status: "in_progress", owner_id: "alice"}
+          provenance: {asserted_by: PM, source_span: "Alice will build the auth service"}
+
+  - id: evt_003
+    type: manual_edit
+    timestamp: "2025-01-06T09:10:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Deadline
+          entity_id: auth-service-deadline
+          fields:
+            description: "Auth service done"
+            task_id: "build-auth-service"
+            due_date: "2025-02-01"
+            status: "committed"
+          provenance: {asserted_by: PM, source_span: "Let's target Feb 1 for the auth service"}
+
+  - id: evt_004
+    type: manual_edit
+    timestamp: "2025-01-06T09:15:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Decision
+          entity_id: db-choice
+          fields: {description: "Use Postgres for primary DB", status: "decided", decided_by: "PM"}
+          provenance: {asserted_by: PM, source_span: "We'll go with Postgres"}
+
+checkpoints:
+  - after_event: evt_001
+    assert:
+      owners.alice.name: "Alice"
+
+  - after_event: evt_003
+    assert:
+      tasks.build-auth-service.owner_id: "alice"
+      deadlines.auth-service-deadline.due_date: "2025-02-01"
+      deadlines.auth-service-deadline.status: "committed"
+
+  - after_event: evt_004
+    assert:
+      decisions.db-choice.description: "Use Postgres for primary DB"
+      decisions.db-choice.history_length: 1

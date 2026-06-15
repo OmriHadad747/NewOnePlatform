@@ -1,0 +1,52 @@
+name: open_question_lifecycle
+description: >
+  An open question is raised, then answered later. Answering it also
+  assigns an owner to the related task.
+
+events:
+  - id: evt_001
+    type: manual_edit
+    timestamp: "2025-01-06T09:00:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Task
+          entity_id: setup-ci
+          fields: {title: "Set up CI pipeline", status: "open"}
+          provenance: {asserted_by: PM, source_span: "We also need a CI pipeline"}
+        - op: create
+          entity_type: OpenQuestion
+          entity_id: who-owns-ci
+          fields: {question: "Who owns the CI pipeline task?", status: "open"}
+          provenance: {asserted_by: PM, source_span: "we still need someone to own the CI pipeline"}
+
+  - id: evt_002
+    type: manual_edit
+    timestamp: "2025-01-13T10:00:00Z"
+    source: standup_2025-01-13
+    payload:
+      deltas:
+        - op: update
+          entity_type: OpenQuestion
+          entity_id: who-owns-ci
+          fields: {status: "answered", answer: "bob"}
+          provenance: {asserted_by: bob, source_span: "I'll take the CI pipeline"}
+        - op: update
+          entity_type: Task
+          entity_id: setup-ci
+          fields: {owner_id: "bob"}
+          provenance: {asserted_by: bob, source_span: "I'll take the CI pipeline"}
+
+checkpoints:
+  - after_event: evt_001
+    assert:
+      open_questions.who-owns-ci.status: "open"
+      tasks.setup-ci.owner_id: null
+
+  - after_event: evt_002
+    assert:
+      open_questions.who-owns-ci.status: "answered"
+      open_questions.who-owns-ci.answer: "bob"
+      tasks.setup-ci.owner_id: "bob"
+      open_questions.who-owns-ci.history_length: 2

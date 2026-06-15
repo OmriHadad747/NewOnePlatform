@@ -1,0 +1,60 @@
+name: dependency_break
+description: >
+  A dependency between two tasks is established, then breaks when the
+  upstream task becomes blocked.
+
+events:
+  - id: evt_001
+    type: manual_edit
+    timestamp: "2025-01-06T09:00:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Task
+          entity_id: build-auth-service
+          fields: {title: "Build auth service", status: "in_progress"}
+          provenance: {asserted_by: PM, source_span: "Alice will build the auth service"}
+        - op: create
+          entity_type: Task
+          entity_id: integrate-sso
+          fields: {title: "Integrate SSO", status: "open"}
+          provenance: {asserted_by: PM, source_span: "Once auth is done, Bob will integrate SSO"}
+        - op: create
+          entity_type: Dependency
+          entity_id: sso-depends-on-auth
+          fields:
+            description: "SSO integration depends on the auth service"
+            from_entity_id: "integrate-sso"
+            to_entity_id: "build-auth-service"
+            status: "active"
+          provenance: {asserted_by: PM, source_span: "Once auth is done, Bob will integrate SSO"}
+
+  - id: evt_002
+    type: manual_edit
+    timestamp: "2025-01-20T10:00:00Z"
+    source: standup_2025-01-20
+    payload:
+      deltas:
+        - op: update
+          entity_type: Task
+          entity_id: build-auth-service
+          fields: {status: "blocked"}
+          provenance: {asserted_by: alice, source_span: "auth service is blocked on the identity library"}
+        - op: update
+          entity_type: Dependency
+          entity_id: sso-depends-on-auth
+          fields: {status: "broken"}
+          provenance: {asserted_by: PM, source_span: "that means SSO integration is blocked too"}
+
+checkpoints:
+  - after_event: evt_001
+    assert:
+      dependencies.sso-depends-on-auth.status: "active"
+      tasks.build-auth-service.status: "in_progress"
+
+  - after_event: evt_002
+    assert:
+      tasks.build-auth-service.status: "blocked"
+      dependencies.sso-depends-on-auth.status: "broken"
+      dependencies.sso-depends-on-auth.history_length: 2

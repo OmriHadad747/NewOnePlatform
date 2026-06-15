@@ -1,0 +1,79 @@
+name: deadline_slip
+description: >
+  A committed deadline slips after a blocking risk is raised by email;
+  both the deadline update and the new risk must be reflected in state.
+
+events:
+  - id: evt_001
+    type: manual_edit
+    timestamp: "2025-01-06T09:00:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Task
+          entity_id: build-auth-service
+          fields: {title: "Build auth service", status: "in_progress", owner_id: "alice"}
+          provenance: {asserted_by: PM, source_span: "Alice will build the auth service"}
+
+  - id: evt_002
+    type: manual_edit
+    timestamp: "2025-01-06T09:05:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Deadline
+          entity_id: auth-service-deadline
+          fields:
+            description: "Auth service done"
+            task_id: "build-auth-service"
+            due_date: "2025-02-01"
+            status: "committed"
+          provenance: {asserted_by: PM, source_span: "Let's target Feb 1 for the auth service"}
+
+  - id: evt_003
+    type: email_reply_received
+    timestamp: "2025-01-20T14:00:00Z"
+    source: email_alice_2025-01-20
+    raw_text: >
+      Heads up - the auth service deadline needs to move to Feb 10, we're
+      blocked on the new identity library.
+    payload: {}
+
+  - id: evt_004
+    type: manual_edit
+    timestamp: "2025-01-20T14:30:00Z"
+    source: email_alice_2025-01-20
+    payload:
+      deltas:
+        - op: update
+          entity_type: Deadline
+          entity_id: auth-service-deadline
+          fields: {due_date: "2025-02-10", status: "slipped"}
+          provenance:
+            asserted_by: alice
+            source_span: "the auth service deadline needs to move to Feb 10, we're blocked on the new identity library"
+        - op: create
+          entity_type: Risk
+          entity_id: identity-library-blocker
+          fields:
+            description: "Blocked on new identity library"
+            severity: "medium"
+            status: "open"
+            related_entity_ids: ["build-auth-service"]
+          provenance: {asserted_by: alice, source_span: "we're blocked on the new identity library"}
+
+checkpoints:
+  - after_event: evt_002
+    assert:
+      deadlines.auth-service-deadline.due_date: "2025-02-01"
+      deadlines.auth-service-deadline.status: "committed"
+
+  - after_event: evt_004
+    assert:
+      deadlines.auth-service-deadline.due_date: "2025-02-10"
+      deadlines.auth-service-deadline.status: "slipped"
+      deadlines.auth-service-deadline.history_length: 2
+      risks.identity-library-blocker.severity: "medium"
+      risks.identity-library-blocker.status: "open"

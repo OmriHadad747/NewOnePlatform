@@ -1,0 +1,85 @@
+name: decision_reversal
+description: >
+  A decision is made early on, then reversed several events later. State
+  must reflect the latest decision while keeping the earlier one in
+  history -- this is the riskiest case (decision drift).
+
+events:
+  - id: evt_001
+    type: manual_edit
+    timestamp: "2025-01-06T09:00:00Z"
+    source: kickoff_meeting
+    payload:
+      deltas:
+        - op: create
+          entity_type: Decision
+          entity_id: db-choice
+          fields: {description: "Use Postgres for primary DB", status: "decided"}
+          provenance: {asserted_by: PM, source_span: "We'll go with Postgres"}
+
+  - id: evt_002
+    type: manual_edit
+    timestamp: "2025-01-08T10:00:00Z"
+    source: standup_2025-01-08
+    payload:
+      deltas:
+        - op: create
+          entity_type: Task
+          entity_id: setup-ci
+          fields: {title: "Set up CI pipeline", status: "open"}
+          provenance: {asserted_by: PM, source_span: "We also need a CI pipeline"}
+
+  - id: evt_003
+    type: manual_edit
+    timestamp: "2025-01-15T10:00:00Z"
+    source: standup_2025-01-15
+    payload:
+      deltas:
+        - op: update
+          entity_type: Task
+          entity_id: setup-ci
+          fields: {status: "in_progress"}
+          provenance: {asserted_by: PM, source_span: "CI pipeline work has started"}
+
+  - id: evt_004
+    type: manual_edit
+    timestamp: "2025-01-22T10:00:00Z"
+    source: standup_2025-01-22
+    payload:
+      deltas:
+        - op: update
+          entity_type: Task
+          entity_id: setup-ci
+          fields: {status: "done"}
+          provenance: {asserted_by: PM, source_span: "CI pipeline is live"}
+
+  - id: evt_005
+    type: manual_edit
+    timestamp: "2025-01-29T10:00:00Z"
+    source: standup_2025-01-29
+    payload:
+      deltas:
+        - op: update
+          entity_type: Decision
+          entity_id: db-choice
+          fields: {description: "Use MySQL for primary DB"}
+          provenance:
+            asserted_by: PM
+            source_span: "Actually, let's switch to MySQL - Postgres had latency issues"
+
+checkpoints:
+  - after_event: evt_001
+    assert:
+      decisions.db-choice.description: "Use Postgres for primary DB"
+      decisions.db-choice.history_length: 1
+
+  - after_event: evt_004
+    assert:
+      decisions.db-choice.description: "Use Postgres for primary DB"
+      decisions.db-choice.history_length: 1
+
+  - after_event: evt_005
+    assert:
+      decisions.db-choice.description: "Use MySQL for primary DB"
+      decisions.db-choice.status: "decided"
+      decisions.db-choice.history_length: 2

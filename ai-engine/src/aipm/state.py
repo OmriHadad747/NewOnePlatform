@@ -7,12 +7,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from aipm.entities import ENTITY_TYPES, Entity
+from aipm.entities import ENTITY_TYPES, Action, Entity
 
 
 @dataclass
 class ProjectState:
     entities: dict[str, dict[str, Entity]] = field(default_factory=dict)
+    actions: list[Action] = field(default_factory=list)
 
     @classmethod
     def empty(cls) -> ProjectState:

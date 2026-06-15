@@ -8,13 +8,13 @@ from aipm.events import Event
 from aipm.projection import ProjectionError, project
 
 
-def _manual_edit(event_id: str, *deltas: dict) -> Event:
+def _human_approval(event_id: str, *deltas: dict, actions: list[dict] | None = None) -> Event:
     return Event(
         id=event_id,
-        type="manual_edit",
+        type="human_approval",
         timestamp="2025-01-01T00:00:00Z",
         source="test",
-        payload={"deltas": list(deltas)},
+        payload={"deltas": list(deltas), **({"actions": actions} if actions else {})},
     )
 
 
@@ -30,7 +30,7 @@ def _delta(op: str, entity_type: str, entity_id: str, fields: dict, **prov) -> d
 
 def test_create_then_read_back():
     events = [
-        _manual_edit(
+        _human_approval(
             "evt_1",
             _delta("create", "Task", "t1", {"title": "Do thing", "status": "open"}),
         )
@@ -46,11 +46,11 @@ def test_create_then_read_back():
 
 def test_update_merges_fields_and_records_history():
     events = [
-        _manual_edit(
+        _human_approval(
             "evt_1",
             _delta("create", "Decision", "d1", {"description": "Use Postgres", "status": "decided"}),
         ),
-        _manual_edit(
+        _human_approval(
             "evt_2",
             _delta("update", "Decision", "d1", {"description": "Use MySQL"}),
         ),
@@ -65,11 +65,11 @@ def test_update_merges_fields_and_records_history():
 
 def test_replaying_same_events_is_deterministic():
     events = [
-        _manual_edit(
+        _human_approval(
             "evt_1",
             _delta("create", "Task", "t1", {"title": "Do thing", "status": "open"}),
         ),
-        _manual_edit(
+        _human_approval(
             "evt_2",
             _delta("update", "Task", "t1", {"status": "done"}),
         ),
@@ -84,11 +84,11 @@ def test_replaying_same_events_is_deterministic():
 
 def test_create_on_existing_entity_raises():
     events = [
-        _manual_edit(
+        _human_approval(
             "evt_1",
             _delta("create", "Task", "t1", {"title": "Do thing", "status": "open"}),
         ),
-        _manual_edit(
+        _human_approval(
             "evt_2",
             _delta("create", "Task", "t1", {"title": "Duplicate", "status": "open"}),
         ),
@@ -100,7 +100,7 @@ def test_create_on_existing_entity_raises():
 
 def test_update_on_missing_entity_raises():
     events = [
-        _manual_edit(
+        _human_approval(
             "evt_1",
             _delta("update", "Task", "t1", {"status": "done"}),
         )
@@ -114,7 +114,7 @@ def test_delta_without_asserted_by_raises():
     events = [
         Event(
             id="evt_1",
-            type="manual_edit",
+            type="human_approval",
             timestamp="2025-01-01T00:00:00Z",
             source="test",
             payload={
@@ -150,3 +150,91 @@ def test_non_delta_events_have_no_effect_on_state():
     state = project(events)
 
     assert all(table == {} for table in state.entities.values())
+
+
+def test_manual_edit_with_deltas_has_no_effect_on_state():
+    """manual_edit is raw input (a person typing a new note into the
+    platform), not an approval -- its deltas, if any, must be ignored."""
+    events = [
+        Event(
+            id="evt_1",
+            type="manual_edit",
+            timestamp="2025-01-01T00:00:00Z",
+            source="note",
+            raw_text="Decided to use Postgres.",
+            payload={
+                "deltas": [
+                    _delta("create", "Decision", "db-choice", {"description": "Use Postgres"})
+                ]
+            },
+        )
+    ]
+
+    state = project(events)
+
+    assert all(table == {} for table in state.entities.values())
+    assert state.actions == []
+
+
+def test_action_is_recorded_with_provenance():
+    events = [
+        _human_approval(
+            "evt_1",
+            actions=[
+                {
+                    "type": "send_email",
+                    "category": "info_request",
+                    "payload": {"to": "bob", "body": "Can you share an update?"},
+                    "provenance": {"asserted_by": "agent", "source_span": "ask bob for an update"},
+                }
+            ],
+        )
+    ]
+
+    state = project(events)
+
+    assert len(state.actions) == 1
+    action = state.actions[0]
+    assert action.type == "send_email"
+    assert action.category == "info_request"
+    assert action.payload == {"to": "bob", "body": "Can you share an update?"}
+    assert action.asserted_by == "agent"
+    assert action.source_event_id == "evt_1"
+
+
+def test_action_with_unknown_category_raises():
+    events = [
+        _human_approval(
+            "evt_1",
+            actions=[
+                {
+                    "type": "send_email",
+                    "category": "urgent",
+                    "payload": {},
+                    "provenance": {"asserted_by": "agent"},
+                }
+            ],
+        )
+    ]
+
+    with pytest.raises(ProjectionError, match="category"):
+        project(events)
+
+
+def test_action_without_asserted_by_raises():
+    events = [
+        _human_approval(
+            "evt_1",
+            actions=[
+                {
+                    "type": "send_email",
+                    "category": "info_request",
+                    "payload": {},
+                    "provenance": {},
+                }
+            ],
+        )
+    ]
+
+    with pytest.raises(ProjectionError, match="asserted_by"):
+        project(events)

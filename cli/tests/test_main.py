@@ -49,13 +49,18 @@ class FakeBackend:
 
     def _serialize_state(self) -> dict:
         state = project(self.events)
-        return {
+        result = {
             entity_type: {
                 entity_id: {"fields": entity.fields, "history": [{}] * len(entity.history)}
                 for entity_id, entity in table.items()
             }
             for entity_type, table in state.entities.items()
         }
+        result["actions"] = [
+            {"type": a.type, "category": a.category, "payload": a.payload, "asserted_by": a.asserted_by}
+            for a in state.actions
+        ]
+        return result
 
 
 def _client(handler) -> httpx.Client:

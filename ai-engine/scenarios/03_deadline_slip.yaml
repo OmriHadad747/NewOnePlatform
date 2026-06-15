@@ -5,7 +5,7 @@ description: >
 
 events:
   - id: evt_001
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:00:00Z"
     source: kickoff_meeting
     payload:
@@ -17,7 +17,7 @@ events:
           provenance: {asserted_by: PM, source_span: "Alice will build the auth service"}
 
   - id: evt_002
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:05:00Z"
     source: kickoff_meeting
     payload:
@@ -42,7 +42,7 @@ events:
     payload: {}
 
   - id: evt_004
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-20T14:30:00Z"
     source: email_alice_2025-01-20
     payload:

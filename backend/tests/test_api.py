@@ -27,7 +27,7 @@ def _delta(op, entity_type, entity_id, fields, **prov):
 def _event(event_id, *deltas):
     return {
         "id": event_id,
-        "type": "manual_edit",
+        "type": "human_approval",
         "timestamp": "2025-01-01T00:00:00Z",
         "source": "test",
         "payload": {"deltas": list(deltas)},

@@ -6,7 +6,7 @@ description: >
 
 events:
   - id: evt_001
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:00:00Z"
     source: kickoff_meeting
     payload:
@@ -18,7 +18,7 @@ events:
           provenance: {asserted_by: PM, source_span: "We'll go with Postgres"}
 
   - id: evt_002
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-08T10:00:00Z"
     source: standup_2025-01-08
     payload:
@@ -30,7 +30,7 @@ events:
           provenance: {asserted_by: PM, source_span: "We also need a CI pipeline"}
 
   - id: evt_003
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-15T10:00:00Z"
     source: standup_2025-01-15
     payload:
@@ -42,7 +42,7 @@ events:
           provenance: {asserted_by: PM, source_span: "CI pipeline work has started"}
 
   - id: evt_004
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-22T10:00:00Z"
     source: standup_2025-01-22
     payload:
@@ -54,7 +54,7 @@ events:
           provenance: {asserted_by: PM, source_span: "CI pipeline is live"}
 
   - id: evt_005
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-29T10:00:00Z"
     source: standup_2025-01-29
     payload:

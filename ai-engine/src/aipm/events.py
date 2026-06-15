@@ -11,6 +11,15 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# transcript_ingested, email_reply_received, manual_edit: raw input -- a
+#   transcript, an email reply, or a note typed directly into the platform
+#   by a participant. All three are extraction input; none of them carry
+#   deltas and none affect the projection.
+# agent_proposal: an LLM-proposed set of deltas/actions, awaiting human
+#   review. Logged for provenance; has no effect on the projection.
+# human_approval: the only event type whose payload (`deltas`, `actions`)
+#   affects the projection -- the single gate where proposed facts/actions
+#   become state.
 EVENT_TYPES = {
     "transcript_ingested",
     "email_reply_received",

@@ -5,7 +5,7 @@ description: >
 
 events:
   - id: evt_001
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:00:00Z"
     source: kickoff_meeting
     payload:
@@ -31,7 +31,7 @@ events:
           provenance: {asserted_by: PM, source_span: "Once auth is done, Bob will integrate SSO"}
 
   - id: evt_002
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-20T10:00:00Z"
     source: standup_2025-01-20
     payload:

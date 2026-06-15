@@ -20,8 +20,8 @@ class EventIn(BaseModel):
 
 
 def serialize_state(state: ProjectState) -> dict[str, Any]:
-    """Render a ProjectState as JSON: one table per entity type."""
-    return {
+    """Render a ProjectState as JSON: one table per entity type, plus actions."""
+    result: dict[str, Any] = {
         entity_type: {
             entity_id: {
                 "fields": entity.fields,
@@ -31,3 +31,5 @@ def serialize_state(state: ProjectState) -> dict[str, Any]:
         }
         for entity_type, table in state.entities.items()
     }
+    result["actions"] = [asdict(action) for action in state.actions]
+    return result

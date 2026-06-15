@@ -90,7 +90,25 @@ def cmd_replay(client: httpx.Client, scenario_file: str) -> int:
 
 
 def _resolve(state: dict, path: str):
-    table_name, entity_id, attr = path.split(".", 2)
+    """Resolve a dotted assertion path.
+
+    Entity paths look like 'decisions.db-choice.description' or
+    '....history_length'. Action paths look like 'actions.count' or
+    'actions.0.type' / 'actions.0.payload.<key>'.
+    """
+    table_name, rest = path.split(".", 1)
+
+    if table_name == "actions":
+        actions = state.get("actions", [])
+        if rest == "count":
+            return len(actions)
+        index, attr = rest.split(".", 1)
+        action = actions[int(index)]
+        if attr.startswith("payload."):
+            return action["payload"].get(attr.removeprefix("payload."))
+        return action.get(attr)
+
+    entity_id, attr = rest.split(".", 1)
     entity_type = TABLES[table_name]
     entity = state.get(entity_type, {}).get(entity_id)
     if entity is None:

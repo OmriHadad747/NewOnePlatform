@@ -1,0 +1,63 @@
+name: action_proposals
+description: >
+  A participant types a note about a vendor delay (manual_edit -- raw
+  input, no projection effect). The agent then proposes, and a human
+  approves, both a state delta (new risk) and two actions: an info_request
+  (the agent emailing a teammate for an update -- auto-sent, no approval
+  needed in practice) and a consequential action (escalating to
+  management -- the kind of action this approval event represents).
+
+events:
+  - id: evt_001
+    type: manual_edit
+    timestamp: "2025-02-03T09:00:00Z"
+    source: pm_note
+    raw_text: "Bob mentioned the vendor API access is delayed again."
+    payload: {}
+
+  - id: evt_002
+    type: human_approval
+    timestamp: "2025-02-03T09:30:00Z"
+    source: pm_approval
+    payload:
+      deltas:
+        - op: create
+          entity_type: Risk
+          entity_id: vendor-api-delay
+          fields:
+            description: "Vendor API access delayed past sprint end"
+            severity: "high"
+            status: "open"
+          provenance: {asserted_by: PM, source_span: "the vendor API access is delayed again"}
+      actions:
+        - type: send_email
+          category: info_request
+          payload:
+            to: "bob"
+            subject: "Need latest vendor timeline"
+            body: "Can you share the latest update from the vendor on API access?"
+          provenance: {asserted_by: agent, source_span: "the vendor API access is delayed again"}
+        - type: escalate_to_management
+          category: consequential
+          payload:
+            to: "engineering_director"
+            subject: "Risk: vendor API delay may impact sprint"
+            body: "Flagging a high-severity risk that may impact the current sprint deadline."
+          provenance: {asserted_by: PM, source_span: "we should flag this to the director"}
+
+checkpoints:
+  - after_event: evt_001
+    assert:
+      actions.count: 0
+
+  - after_event: evt_002
+    assert:
+      risks.vendor-api-delay.severity: "high"
+      risks.vendor-api-delay.status: "open"
+      actions.count: 2
+      actions.0.type: "send_email"
+      actions.0.category: "info_request"
+      actions.0.payload.to: "bob"
+      actions.1.type: "escalate_to_management"
+      actions.1.category: "consequential"
+      actions.1.payload.to: "engineering_director"

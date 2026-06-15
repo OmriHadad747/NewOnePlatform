@@ -5,7 +5,7 @@ description: >
 
 events:
   - id: evt_001
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:00:00Z"
     source: kickoff_meeting
     payload:
@@ -17,7 +17,7 @@ events:
           provenance: {asserted_by: PM, source_span: "Alice will lead the backend work"}
 
   - id: evt_002
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:05:00Z"
     source: kickoff_meeting
     payload:
@@ -29,7 +29,7 @@ events:
           provenance: {asserted_by: PM, source_span: "Alice will build the auth service"}
 
   - id: evt_003
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:10:00Z"
     source: kickoff_meeting
     payload:
@@ -45,7 +45,7 @@ events:
           provenance: {asserted_by: PM, source_span: "Let's target Feb 1 for the auth service"}
 
   - id: evt_004
-    type: manual_edit
+    type: human_approval
     timestamp: "2025-01-06T09:15:00Z"
     source: kickoff_meeting
     payload:

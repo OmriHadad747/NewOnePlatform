@@ -7,20 +7,22 @@ produces the same state -- this is what makes replay testing possible.
 
 from __future__ import annotations
 
-from aipm.entities import ENTITY_TYPES, Entity, ProvenanceRecord
+from aipm.entities import ACTION_CATEGORIES, ENTITY_TYPES, Action, Entity, ProvenanceRecord
 from aipm.events import Event
 from aipm.state import ProjectState
 
-# Event types whose deltas mutate state. The others (transcript_ingested,
-# email_reply_received, agent_proposal) are logged for provenance but have
-# no effect on the projection in Phase 1.
-DELTA_EVENT_TYPES = {"manual_edit", "human_approval"}
+# `human_approval` is the only event type whose payload mutates state. All
+# other event types (transcript_ingested, email_reply_received, manual_edit,
+# agent_proposal) are raw input -- a person or the agent adding a new
+# transcript/email/note/proposal to the log -- and have no effect on the
+# projection in Phase 1. They become extraction input in a later phase.
+DELTA_EVENT_TYPES = {"human_approval"}
 
 DELTA_OPS = {"create", "update"}
 
 
 class ProjectionError(Exception):
-    """Raised when an event log contains a delta that cannot be applied."""
+    """Raised when an event log contains a delta or action that cannot be applied."""
 
 
 def project(events: list[Event]) -> ProjectState:
@@ -34,6 +36,8 @@ def apply_event(state: ProjectState, event: Event) -> None:
     if event.type in DELTA_EVENT_TYPES:
         for delta in event.payload.get("deltas", []):
             apply_delta(state, delta, event)
+        for action in event.payload.get("actions", []):
+            apply_action(state, action, event)
 
 
 def apply_delta(state: ProjectState, delta: dict, event: Event) -> None:
@@ -67,11 +71,7 @@ def apply_delta(state: ProjectState, delta: dict, event: Event) -> None:
 
 
 def _build_provenance(delta: dict, fields: dict, event: Event) -> ProvenanceRecord:
-    prov = delta.get("provenance", {})
-    if "asserted_by" not in prov:
-        raise ProjectionError(
-            f"{event.id}: delta for {delta.get('entity_id')!r} missing provenance.asserted_by"
-        )
+    prov = _require_asserted_by(delta.get("provenance", {}), event, delta.get("entity_id"))
     return ProvenanceRecord(
         fields_changed=dict(fields),
         source_event_id=event.id,
@@ -80,3 +80,28 @@ def _build_provenance(delta: dict, fields: dict, event: Event) -> ProvenanceReco
         confidence=prov.get("confidence", 1.0),
         source_span=prov.get("source_span"),
     )
+
+
+def apply_action(state: ProjectState, action: dict, event: Event) -> None:
+    category = action.get("category")
+    if category not in ACTION_CATEGORIES:
+        raise ProjectionError(f"{event.id}: unknown action category {category!r}")
+
+    prov = _require_asserted_by(action.get("provenance", {}), event, action.get("type"))
+    state.actions.append(
+        Action(
+            type=action["type"],
+            category=category,
+            payload=dict(action.get("payload", {})),
+            source_event_id=event.id,
+            asserted_by=prov["asserted_by"],
+            asserted_at=prov.get("asserted_at", event.timestamp),
+            source_span=prov.get("source_span"),
+        )
+    )
+
+
+def _require_asserted_by(prov: dict, event: Event, context: str | None) -> dict:
+    if "asserted_by" not in prov:
+        raise ProjectionError(f"{event.id}: {context!r} missing provenance.asserted_by")
+    return prov

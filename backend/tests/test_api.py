@@ -306,3 +306,93 @@ def test_extract_detects_deadline_regression(client):
 
 def test_approve_unknown_proposal_is_404(client):
     assert client.post("/proposals/nope/approve").status_code == 404
+
+
+# --- /review-state ------------------------------------------------------------
+
+
+def _human_approval(event_id, *deltas, actions=None):
+    return {
+        "id": event_id,
+        "type": "human_approval",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {"deltas": list(deltas), "actions": actions or []},
+    }
+
+
+def test_review_state_clean_returns_no_issues(client):
+    body = client.post("/review-state").json()
+    assert body["issues"] == []
+    assert body["executed"] == []
+    assert body["proposal"] is None
+
+
+def test_review_state_open_question_auto_sends_email(client):
+    client.post("/events", json=_human_approval(
+        "evt_1",
+        _delta("create", "OpenQuestion", "api-access",
+               {"description": "Who owns API access?", "status": "open"}),
+    ))
+
+    body = client.post("/review-state").json()
+
+    assert len(body["issues"]) == 1
+    assert body["issues"][0]["rule"] == "open_question"
+    assert len(body["executed"]) == 1
+    assert body["executed"][0]["type"] == "email_sent"
+    assert body["proposal"] is None
+
+    events = client.get("/events").json()
+    assert any(e["type"] == "email_sent" for e in events)
+
+
+def test_review_state_blocked_task_auto_sends_email(client):
+    client.post("/events", json=_human_approval(
+        "evt_1",
+        _delta("create", "Task", "deploy-service",
+               {"title": "Deploy", "status": "blocked", "owner": "alice"}),
+    ))
+
+    body = client.post("/review-state").json()
+
+    assert body["issues"][0]["rule"] == "blocked_task"
+    assert body["executed"][0]["type"] == "email_sent"
+    assert body["executed"][0]["payload"]["payload"]["to"] == "alice"
+
+
+def test_review_state_high_risk_no_owner_creates_proposal(client):
+    client.post("/events", json=_human_approval(
+        "evt_1",
+        _delta("create", "Risk", "vendor-delay",
+               {"severity": "high", "status": "open"}),
+    ))
+
+    body = client.post("/review-state").json()
+
+    assert body["issues"][0]["rule"] == "unowned_high_risk"
+    assert body["executed"] == []
+    proposal = body["proposal"]
+    assert proposal is not None
+    assert proposal["type"] == "agent_proposal"
+    actions = proposal["payload"]["actions"]
+    assert len(actions) == 1
+    assert actions[0]["type"] == "raise_flag"
+    assert actions[0]["category"] == "consequential"
+
+    pending = client.get("/proposals").json()
+    assert any(p["id"] == proposal["id"] for p in pending)
+
+
+def test_review_state_proposal_can_be_approved(client):
+    client.post("/events", json=_human_approval(
+        "evt_1",
+        _delta("create", "Risk", "vendor-delay", {"severity": "high", "status": "open"}),
+    ))
+
+    proposal_id = client.post("/review-state").json()["proposal"]["id"]
+    approve = client.post(f"/proposals/{proposal_id}/approve")
+    assert approve.status_code == 201
+
+    events = client.get("/events").json()
+    assert any(e["type"] == "flag_raised" for e in events)

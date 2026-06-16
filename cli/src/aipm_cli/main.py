@@ -20,6 +20,9 @@ Inspect / drive the loop:
                                [SIMULATED] outbound event)
   replay <scenario.yaml>   -- post a scenario's events in order and check its
                                checkpoints against the live backend
+  review                    -- scan current state for issues and emit follow-up
+                               actions (open questions, blocked tasks, unowned
+                               high risks, overdue deadlines)
 
 Add --json before any command to print the raw API JSON instead of the
 human-readable rendering.
@@ -215,6 +218,45 @@ def render_proposals(proposals: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def render_review(body: dict) -> str:
+    """Human-readable view of a /review-state response."""
+    issues = body.get("issues", [])
+    executed = body.get("executed", [])
+    proposal = body.get("proposal")
+
+    lines = ["State review", "============"]
+
+    if not issues:
+        lines.append("Nothing to follow up -- project looks clean.")
+        return "\n".join(lines)
+
+    lines.append(f"Found {len(issues)} issue(s):")
+    for iss in issues:
+        lines.append(
+            f"  ! [{iss['rule']}] {iss['entity_type']} '{iss['entity_id']}': {iss['detail']}"
+        )
+
+    lines.append("")
+    if executed:
+        lines.append("Auto-sent (info_request -- no approval needed):")
+        for ev in executed:
+            inner = ev.get("payload", {}).get("payload", {})
+            lines.append(f"  >> [SIMULATED] {ev['type']}: {_fields(inner)}")
+        lines.append("   (Phase 1 stub -- nothing was actually sent.)")
+    else:
+        lines.append("Auto-sent: none.")
+
+    if proposal:
+        payload = proposal["payload"]
+        lines.append("")
+        lines.append(f"Proposal {proposal['id']} -- needs your approval:")
+        for a in payload.get("actions", []):
+            lines.append(f"  ! {a['type']}: {_fields(a.get('payload', {}))}")
+        lines.append(f"Next: aipm approve {proposal['id']}")
+
+    return "\n".join(lines)
+
+
 def render_approval(approval: dict) -> str:
     payload = approval.get("payload", {})
     lines = [
@@ -300,6 +342,16 @@ def cmd_proposals(client: httpx.Client, as_json: bool = False) -> int:
     response.raise_for_status()
     body = response.json()
     print(json.dumps(body, indent=2) if as_json else render_proposals(body))
+    return 0
+
+
+def cmd_review(client: httpx.Client, as_json: bool = False) -> int:
+    """Scan current state for issues and emit follow-up actions."""
+    response = client.post("/review-state")
+    if response.status_code >= 400:
+        return _error(response)
+    body = response.json()
+    print(json.dumps(body, indent=2) if as_json else render_review(body))
     return 0
 
 
@@ -411,6 +463,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("proposals", help="list proposals awaiting approval")
 
+    subparsers.add_parser(
+        "review",
+        help="scan current state for issues (open questions, blocked tasks, etc.)",
+    )
+
     approve_parser = subparsers.add_parser(
         "approve", help="approve a proposal (applies it to state)"
     )
@@ -444,6 +501,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_extract(client, args.source_event_id, as_json)
         if args.command == "proposals":
             return cmd_proposals(client, as_json)
+        if args.command == "review":
+            return cmd_review(client, as_json)
         if args.command == "approve":
             return cmd_approve(client, args.proposal_id, as_json)
 

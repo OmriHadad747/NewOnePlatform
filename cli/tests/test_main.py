@@ -25,11 +25,13 @@ from aipm_cli.main import (
     cmd_extract,
     cmd_proposals,
     cmd_replay,
+    cmd_review,
     cmd_state,
     render_approval,
     render_events,
     render_extract,
     render_proposals,
+    render_review,
     render_state,
     _resolve,
 )
@@ -297,6 +299,84 @@ def test_cmd_approve_error(capsys):
     client = _client(lambda r: httpx.Response(404, json={"detail": "no proposal"}))
     assert cmd_approve(client, "nope") == 1
     assert "no proposal" in capsys.readouterr().err
+
+
+# --- review -------------------------------------------------------------------
+
+
+def test_cmd_review_clean_state(capsys):
+    client = _client(lambda r: httpx.Response(200, json={"issues": [], "executed": [], "proposal": None}))
+    assert cmd_review(client, as_json=False) == 0
+    assert "clean" in capsys.readouterr().out
+
+
+def test_cmd_review_returns_json(capsys):
+    body = {"issues": [], "executed": [], "proposal": None}
+    client = _client(lambda r: httpx.Response(200, json=body))
+    assert cmd_review(client, as_json=True) == 0
+    assert json.loads(capsys.readouterr().out) == body
+
+
+def test_cmd_review_error(capsys):
+    client = _client(lambda r: httpx.Response(500, json={"detail": "oops"}))
+    assert cmd_review(client) == 1
+    assert "oops" in capsys.readouterr().err
+
+
+def test_render_review_clean():
+    body = {"issues": [], "executed": [], "proposal": None}
+    out = render_review(body)
+    assert "clean" in out
+
+
+def test_render_review_with_info_request_auto_executed():
+    body = {
+        "issues": [
+            {"rule": "open_question", "entity_type": "OpenQuestion",
+             "entity_id": "api-access", "detail": "Open question has no answer: 'Who owns it?'"},
+            {"rule": "blocked_task", "entity_type": "Task",
+             "entity_id": "deploy", "detail": "Task 'deploy' is blocked"},
+        ],
+        "executed": [
+            {"id": "out_1", "type": "email_sent",
+             "payload": {"payload": {"to": "alice", "subject": "Follow-up?"}}},
+            {"id": "out_2", "type": "email_sent",
+             "payload": {"payload": {"to": "bob", "subject": "Task blocked"}}},
+        ],
+        "proposal": None,
+    }
+    out = render_review(body)
+    assert "open_question" in out
+    assert "blocked_task" in out
+    assert "[SIMULATED] email_sent" in out
+    assert "to=alice" in out
+    assert "Auto-sent" in out
+
+
+def test_render_review_with_consequential_proposal():
+    body = {
+        "issues": [
+            {"rule": "unowned_high_risk", "entity_type": "Risk",
+             "entity_id": "vendor-delay", "detail": "High-severity risk 'vendor-delay' is open with no owner"},
+        ],
+        "executed": [],
+        "proposal": {
+            "id": "prop_abc123",
+            "type": "agent_proposal",
+            "payload": {
+                "actions": [
+                    {"type": "raise_flag", "category": "consequential",
+                     "payload": {"entity_id": "vendor-delay", "reason": "no owner"}},
+                ],
+            },
+        },
+    }
+    out = render_review(body)
+    assert "unowned_high_risk" in out
+    assert "prop_abc123" in out
+    assert "[SIMULATED]" not in out
+    assert "raise_flag" in out
+    assert "aipm approve prop_abc123" in out
 
 
 @pytest.mark.parametrize("scenario_path", sorted(SCENARIOS_DIR.glob("*.yaml")), ids=lambda p: p.stem)

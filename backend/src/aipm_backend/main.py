@@ -6,6 +6,13 @@ Event endpoints:
   GET  /state   -- the current projected project state
 
 Extraction / approval flow (Step 3):
+  POST /review-state               -- scan current state for issues (open
+                                      questions, blocked tasks, unowned high
+                                      risks, overdue deadlines) and emit
+                                      follow-up actions: info_request ones
+                                      auto-execute (email_sent/reminder_sent);
+                                      consequential ones go into a proposal.
+                                      Returns: {issues, executed, proposal}
   POST /extract                    -- run extraction on a raw event, write an
                                       agent_proposal (no state change).
                                       info_request actions execute (stub)
@@ -42,6 +49,7 @@ from aipm.events import RAW_INPUT_TYPES, Event
 from aipm.extraction import build_prompt, filter_grounded
 from aipm.extraction.providers import ExtractionProvider
 from aipm.projection import ProjectionError, apply_event, project
+from aipm.review import review_state as _review_state
 
 from aipm_backend import storage
 from aipm_backend.extraction import get_provider
@@ -160,6 +168,52 @@ def extract(
     ]
 
     return {"proposal": proposal, "dropped": dropped, "executed": executed, "conflicts": conflicts}
+
+
+@app.post("/review-state")
+def review_state_endpoint() -> dict:
+    events = storage.read_events()
+    state = project(events)
+    result = _review_state(state)
+
+    issues = [
+        {"rule": i.rule, "entity_type": i.entity_type, "entity_id": i.entity_id, "detail": i.detail}
+        for i in result.issues
+    ]
+
+    if not result.actions:
+        return {"issues": issues, "executed": [], "proposal": None}
+
+    auto_actions = [a for a in result.actions if a["category"] == "info_request"]
+    consequential_actions = [a for a in result.actions if a["category"] == "consequential"]
+
+    executed = [
+        _write_outbound_event(a, source="agent:review", source_event_id="review-state")
+        for a in auto_actions
+    ]
+
+    proposal = None
+    if consequential_actions:
+        actions_with_prov = [
+            {**a, "provenance": {"asserted_by": "review:rules"}}
+            for a in consequential_actions
+        ]
+        proposal_event = Event(
+            id=f"prop_{uuid.uuid4().hex[:12]}",
+            type="agent_proposal",
+            timestamp=_now(),
+            source="review:rules",
+            payload={
+                "provider": "review:rules",
+                "source_event_id": "review-state",
+                "deltas": [],
+                "actions": actions_with_prov,
+            },
+        )
+        storage.write_event(proposal_event)
+        proposal = asdict(proposal_event)
+
+    return {"issues": issues, "executed": executed, "proposal": proposal}
 
 
 @app.get("/proposals")

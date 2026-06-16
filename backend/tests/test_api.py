@@ -7,19 +7,30 @@ from fastapi.testclient import TestClient
 
 from aipm.extraction.types import ExtractionResult, ProposedAction, ProposedDelta
 
-from aipm_backend.extraction import StaticProvider, get_provider
+from aipm_backend.extraction import StaticProvider, get_provider, get_provider_optional
 from aipm_backend.main import app
 
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("AIPM_EVENT_LOG", str(tmp_path / "events.jsonl"))
+    # Auto-extraction off by default in tests, so POST /events behaves
+    # deterministically regardless of any API keys in the environment. Tests
+    # that exercise the auto path turn it on explicitly.
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "0")
+    for key in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
     return TestClient(app)
 
 
 def _use_provider(result: ExtractionResult):
-    """Override the extraction provider with a fixed-result fake."""
+    """Override the manual /extract provider with a fixed-result fake."""
     app.dependency_overrides[get_provider] = lambda: StaticProvider(result)
+
+
+def _use_auto_provider(result: ExtractionResult):
+    """Override the auto-extraction (POST /events) provider with a fixed fake."""
+    app.dependency_overrides[get_provider_optional] = lambda: StaticProvider(result)
 
 
 @pytest.fixture(autouse=True)
@@ -396,3 +407,112 @@ def test_review_state_proposal_can_be_approved(client):
 
     events = client.get("/events").json()
     assert any(e["type"] == "flag_raised" for e in events)
+
+
+# --- project definition --------------------------------------------------------
+
+
+def test_init_project_sets_meta(client):
+    response = client.post(
+        "/project",
+        json={"name": "Apollo", "description": "Launch the lander", "team": ["alice", "bob"]},
+    )
+    assert response.status_code == 201
+    assert response.json()["type"] == "project_initialized"
+
+    assert client.get("/project").json()["name"] == "Apollo"
+
+    state = client.get("/state").json()
+    assert state["meta"]["name"] == "Apollo"
+    assert state["meta"]["team"] == ["alice", "bob"]
+
+
+def test_get_project_empty_before_init(client):
+    assert client.get("/project").json() == {}
+
+
+def test_reinit_project_merges_meta(client):
+    client.post("/project", json={"name": "Apollo", "team": ["alice"]})
+    client.post("/project", json={"name": "Apollo 2", "description": "Now with rovers"})
+
+    meta = client.get("/project").json()
+    assert meta["name"] == "Apollo 2"
+    assert meta["description"] == "Now with rovers"
+    assert meta["team"] == ["alice"]  # preserved from the first init
+
+
+# --- auto-extraction on POST /events ------------------------------------------
+
+
+def test_auto_extract_runs_on_raw_event(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "create", "Risk", "vendor-delay", {"severity": "high", "status": "open"},
+                    source_span="The vendor API access is delayed",
+                )
+            ]
+        )
+    )
+
+    response = client.post("/events", json=_raw_event("raw_1", "The vendor API access is delayed."))
+    assert response.status_code == 201
+
+    extraction = response.json()["extraction"]
+    assert extraction is not None
+    assert extraction["proposal"]["payload"]["deltas"][0]["entity_id"] == "vendor-delay"
+
+    # the proposal is now pending, exactly as if /extract had been called
+    assert len(client.get("/proposals").json()) == 1
+
+
+def test_auto_extract_auto_sends_info_request(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _use_auto_provider(
+        ExtractionResult(
+            actions=[
+                ProposedAction(
+                    "send_email", "info_request", {"to": "bob", "subject": "Update?"},
+                    source_span="ask Bob for an update",
+                )
+            ]
+        )
+    )
+
+    response = client.post(
+        "/events", json=_raw_event("raw_1", "Someone should ask Bob for an update.")
+    )
+    extraction = response.json()["extraction"]
+    assert extraction["proposal"] is None
+    assert extraction["executed"][0]["type"] == "email_sent"
+    assert any(e["type"] == "email_sent" for e in client.get("/events").json())
+
+
+def test_auto_extract_off_returns_null(client):
+    # fixture leaves AIPM_AUTO_EXTRACT=0
+    _use_auto_provider(ExtractionResult())
+    response = client.post("/events", json=_raw_event("raw_1", "anything"))
+    assert response.json()["extraction"] is None
+    assert client.get("/proposals").json() == []
+
+
+def test_auto_extract_skipped_without_provider(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    # no provider override and no API key -> get_provider_optional returns None
+    response = client.post("/events", json=_raw_event("raw_1", "anything"))
+    assert response.json()["extraction"] == {"skipped": "no extraction provider configured"}
+
+
+def test_auto_extract_skips_non_raw_events(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[ProposedDelta("create", "Risk", "x", {}, source_span="would fire if it ran")]
+        )
+    )
+    response = client.post(
+        "/events", json=_human_approval("evt_1", _delta("create", "Task", "t1", {"status": "open"})),
+    )
+    assert response.json()["extraction"] is None

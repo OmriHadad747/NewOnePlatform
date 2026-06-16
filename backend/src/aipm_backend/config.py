@@ -21,6 +21,16 @@ def extraction_provider() -> str:
     return os.environ.get("AIPM_EXTRACTION_PROVIDER") or select_provider()
 
 
+def auto_extract() -> bool:
+    """Whether the backend extracts automatically when a raw event is ingested.
+
+    On by default so the system runs itself: posting a transcript/email/note
+    triggers extraction in the same request. Set AIPM_AUTO_EXTRACT=0 to turn
+    it off and drive extraction manually via POST /extract.
+    """
+    return os.environ.get("AIPM_AUTO_EXTRACT", "1").strip().lower() not in {"0", "false", "no", ""}
+
+
 def gemini_api_key() -> str | None:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 

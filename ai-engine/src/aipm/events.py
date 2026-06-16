@@ -11,6 +11,9 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# project_initialized: defines the project (name, description, team). Its
+#   payload sets project-level metadata on the state (used to frame
+#   extraction); it does not carry entity deltas or actions.
 # transcript_ingested, email_reply_received, manual_note: raw input -- a
 #   transcript, an email reply, or a note typed directly into the platform
 #   by a participant. All three are extraction input; none of them carry
@@ -29,6 +32,7 @@ from pathlib import Path
 #   execute only once a `human_approval` applies them. None of these affect
 #   the projection -- they're logged for the audit trail, like raw input.
 EVENT_TYPES = {
+    "project_initialized",
     "transcript_ingested",
     "email_reply_received",
     "manual_note",

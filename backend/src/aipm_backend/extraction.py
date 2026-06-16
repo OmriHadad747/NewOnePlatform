@@ -126,3 +126,15 @@ def build_provider(name: str | None = None) -> ExtractionProvider:
 def get_provider() -> ExtractionProvider:
     """FastAPI dependency. Tests override this to inject a StaticProvider."""
     return build_provider()
+
+
+def get_provider_optional() -> ExtractionProvider | None:
+    """Like `get_provider`, but returns None instead of raising when no
+    provider is configured (no API key). Used by the auto-extraction path on
+    POST /events, where a missing provider should silently skip extraction
+    rather than fail the event append. Tests override this to inject a
+    StaticProvider for the auto path."""
+    try:
+        return build_provider()
+    except (RuntimeError, ValueError):
+        return None

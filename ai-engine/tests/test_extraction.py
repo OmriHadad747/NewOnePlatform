@@ -153,6 +153,26 @@ def test_summarize_empty_state():
     assert "empty" in summarize_state(ProjectState.empty())
 
 
+def test_prompt_includes_project_context_when_set():
+    state = ProjectState.empty()
+    state.meta = {"name": "Apollo", "description": "Launch the lander", "team": ["alice", "bob"]}
+
+    prompt = build_prompt("Auth is blocked.", state)
+
+    assert "PROJECT:" in prompt.suffix
+    assert "Apollo" in prompt.suffix
+    assert "Launch the lander" in prompt.suffix
+    assert "alice, bob" in prompt.suffix
+    # the cacheable prefix is unaffected by per-project context
+    assert prompt.prefix == build_prefix()
+
+
+def test_prompt_omits_project_block_when_no_meta():
+    prompt = build_prompt("Auth is blocked.", ProjectState.empty())
+    assert "PROJECT:" not in prompt.suffix
+    assert "RAW EVENT TEXT:" in prompt.suffix
+
+
 # --- provider selection --------------------------------------------------
 
 

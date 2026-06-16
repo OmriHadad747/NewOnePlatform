@@ -23,6 +23,7 @@ from aipm_cli.main import (
     cmd_approve,
     cmd_events,
     cmd_extract,
+    cmd_init,
     cmd_proposals,
     cmd_replay,
     cmd_review,
@@ -161,6 +162,31 @@ def test_cmd_approve_posts_and_prints(capsys):
     assert json.loads(capsys.readouterr().out)["payload"]["approves"] == "prop_1"
 
 
+# --- project init -------------------------------------------------------------
+
+
+def test_cmd_init_posts_project(capsys):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"id": "proj_1", "type": "project_initialized"})
+
+    assert cmd_init(_client(handler), "Apollo", "Launch the lander", ["alice", "bob"]) == 0
+    assert seen["path"] == "/project"
+    assert seen["body"] == {"name": "Apollo", "description": "Launch the lander", "team": ["alice", "bob"]}
+    out = capsys.readouterr().out
+    assert "Apollo" in out
+    assert "alice, bob" in out
+
+
+def test_cmd_init_error(capsys):
+    client = _client(lambda r: httpx.Response(400, json={"detail": "bad project"}))
+    assert cmd_init(client, "X", None, []) == 1
+    assert "bad project" in capsys.readouterr().err
+
+
 # --- input commands -----------------------------------------------------------
 
 
@@ -187,6 +213,45 @@ def test_cmd_add_raw_reports_backend_error(capsys):
     client = _client(lambda r: httpx.Response(400, json={"detail": "bad event"}))
     assert cmd_add_raw(client, "manual_note", "x", "pm_note") == 1
     assert "bad event" in capsys.readouterr().err
+
+
+def test_cmd_add_raw_renders_inline_extraction(capsys):
+    extraction = {
+        "proposal": {
+            "id": "prop_1",
+            "payload": {
+                "provider": "claude", "source_event_id": "raw_x",
+                "deltas": [{"op": "create", "entity_type": "Risk", "entity_id": "vendor-delay",
+                            "fields": {"severity": "high"}}],
+                "actions": [],
+            },
+        },
+        "executed": [], "conflicts": [], "dropped": [],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(201, json={"id": body["id"], "extraction": extraction})
+
+    assert cmd_add_raw(_client(handler), "email_reply_received", "Vendor is late", "v@x.com") == 0
+    out = capsys.readouterr().out
+    assert "Added email_reply_received" in out
+    assert "prop_1" in out
+    assert "vendor-delay" in out
+
+
+def test_cmd_add_raw_reports_skipped_extraction(capsys):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        return httpx.Response(201, json={
+            "id": body["id"],
+            "extraction": {"skipped": "no extraction provider configured"},
+        })
+
+    assert cmd_add_raw(_client(handler), "manual_note", "x", "pm_note") == 0
+    out = capsys.readouterr().out
+    assert "auto-extraction did not run" in out
+    assert "aipm extract" in out
 
 
 # --- renderers ----------------------------------------------------------------
@@ -267,6 +332,17 @@ def test_render_state_empty():
     out = render_state({"actions": []})
     assert "(no entities yet)" in out
     assert "Approved actions: none" in out
+
+
+def test_render_state_shows_project_meta():
+    state = {
+        "meta": {"name": "Apollo", "description": "Launch the lander", "team": ["alice", "bob"]},
+        "actions": [],
+    }
+    out = render_state(state)
+    assert "Project: Apollo" in out
+    assert "Launch the lander" in out
+    assert "team: alice, bob" in out
 
 
 def test_render_proposals_lists_pending():

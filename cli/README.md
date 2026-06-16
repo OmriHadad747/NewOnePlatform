@@ -9,7 +9,12 @@ direct dependency on `ai-engine` at runtime (only `backend` talks to it);
 ## Commands
 
 ```
-# input -- mint a raw-input event from text, then print its id
+# setup -- define the project (frames extraction)
+aipm init <name> [--description ...] [--team alice bob]
+
+# input -- mint a raw-input event from text. With auto-extraction on (the
+# backend default), each of these extracts, proposes, and auto-sends any
+# info_request emails in the same step, printing the result inline.
 aipm note <text>              # a manual_note (--source)
 aipm email-in <text>          # an email_reply_received (--from <sender>)
 aipm transcript <text>        # a transcript_ingested (--source)
@@ -17,10 +22,11 @@ aipm append <event.json>      # POST a hand-written event JSON
 
 # inspect / drive the loop
 aipm events                    # the full event log
-aipm state                     # the current projected state
-aipm extract <event_id>        # run extraction on a raw event -> a proposal
+aipm state                     # the current projected state (incl. project meta)
+aipm extract <event_id>        # manually run extraction on a raw event
 aipm proposals                 # proposals awaiting approval
 aipm approve <proposal_id>     # approve a proposal -> applied to state
+aipm review                    # scan state for follow-ups (open Qs, blockers...)
 aipm replay <scenario.yaml>   # replay a scenario and check its checkpoints
 ```
 
@@ -33,27 +39,35 @@ Execution of outbound actions is a **stub** in Phase 1: the agent never really
 sends an email or opens a ticket -- it logs an outbound event recording what it
 *would* do. The CLI flags these `[SIMULATED]` so the simulation is obvious.
 
-A typical end-to-end run:
+A typical end-to-end run (auto-extraction on, a provider configured):
 
 ```
-# 1. an email reply lands from a vendor
+# 0. define the project once
+aipm init "Apollo" --description "Ship the lander" --team alice bob
+
+# 1. an email reply lands from a vendor -- the agent extracts, proposes, and
+#    auto-sends any info_request emails right here, printing the result inline.
 aipm email-in "The vendor API access is delayed two weeks." --from vendor@acme.com
 #   -> Added email_reply_received [raw_05c61cb2]
+#   -> Extraction result ... Proposal prop_... / [SIMULATED] email_sent ...
 
-# 2. extract facts/actions from it (writes a proposal; auto-sends any
-#    info_request status/clarification emails as [SIMULATED] email_sent)
-aipm extract raw_05c61cb2
-
-# 3. review and approve -- the one place text becomes state. Any consequential
+# 2. review and approve -- the one place text becomes state. Any consequential
 #    action (open_ticket / raise_flag / escalate_to_management) then fires as a
 #    [SIMULATED] outbound event.
 aipm proposals
 aipm approve prop_05c61cb2
 
+# 3. let the agent scan for follow-ups it should chase on its own
+aipm review     # open questions, blocked/in-progress tasks, unowned risks...
+
 # 4. inspect
-aipm state      # entity tables + the approved-action audit trail
+aipm state      # project meta + entity tables + the approved-action audit trail
 aipm events     # the whole log, outbound events flagged [SIMULATED]
 ```
+
+Without a provider configured (no API key), or with `AIPM_AUTO_EXTRACT=0`,
+`email-in`/`note`/`transcript` just log the event and tell you to run
+`aipm extract <id>` yourself -- the manual path still works the same.
 
 The two email directions in the loop are both just events:
 

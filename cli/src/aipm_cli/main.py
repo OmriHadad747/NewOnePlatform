@@ -1,6 +1,10 @@
 """CLI client for the backend API.
 
-Input (mint a raw-input event, then print its id so you can `extract` it):
+Setup:
+  init <name>              -- define the project (--description, --team)
+
+Input (mint a raw-input event; with auto-extraction on, the agent extracts,
+proposes, and auto-sends info_request emails in the same step):
   note <text>              -- append a manual_note event
   email-in <text>          -- append an email_reply_received event (--from)
   transcript <text>        -- append a transcript_ingested event
@@ -176,6 +180,14 @@ def _event_detail(e: dict) -> str:
 def render_state(state: dict) -> str:
     """Entity tables (with current fields) plus the approved-action audit trail."""
     lines = ["Project state", "============="]
+    meta = state.get("meta") or {}
+    if meta.get("name"):
+        lines.append(f"Project: {meta['name']}")
+        if meta.get("description"):
+            lines.append(f"  {meta['description']}")
+        if meta.get("team"):
+            lines.append(f"  team: {', '.join(meta['team'])}")
+        lines.append("")
     any_entities = False
     for entity_type in ENTITY_TABLES:
         table = state.get(entity_type, {})
@@ -279,8 +291,45 @@ def _error(response: httpx.Response) -> int:
     return 1
 
 
+def cmd_init(
+    client: httpx.Client,
+    name: str,
+    description: str | None,
+    team: list[str],
+    as_json: bool = False,
+) -> int:
+    """Define the project so later extraction has framing.
+
+    Only sends the fields actually provided, so re-running `init` with a
+    single flag updates just that field (the backend merges).
+    """
+    payload: dict = {"name": name}
+    if description is not None:
+        payload["description"] = description
+    if team:
+        payload["team"] = team
+    response = client.post("/project", json=payload)
+    if response.status_code >= 400:
+        return _error(response)
+    if as_json:
+        print(json.dumps(response.json(), indent=2))
+    else:
+        print(f"Initialized project: {name}")
+        if description:
+            print(f"  {description}")
+        if team:
+            print(f"  team: {', '.join(team)}")
+        print("Next: stream events with aipm note / email-in / transcript")
+    return 0
+
+
 def cmd_add_raw(client: httpx.Client, event_type: str, text: str, source: str, as_json: bool = False) -> int:
-    """Mint a raw-input event from text and POST it."""
+    """Mint a raw-input event from text and POST it.
+
+    With auto-extraction on (the backend default), the response carries the
+    extraction result, which we render inline -- so a single `email-in`/`note`/
+    `transcript` shows what the agent extracted, proposed, and auto-sent.
+    """
     event = {
         "id": f"raw_{uuid.uuid4().hex[:8]}",
         "type": event_type,
@@ -292,11 +341,22 @@ def cmd_add_raw(client: httpx.Client, event_type: str, text: str, source: str, a
     response = client.post("/events", json=event)
     if response.status_code >= 400:
         return _error(response)
+    body = response.json()
     if as_json:
-        print(json.dumps(response.json(), indent=2))
-    else:
-        print(f"Added {event_type} [{event['id']}]")
+        print(json.dumps(body, indent=2))
+        return 0
+
+    print(f"Added {event_type} [{event['id']}]")
+    extraction = body.get("extraction")
+    if not extraction:
+        # auto-extraction disabled -- drive it manually
         print(f"Next: aipm extract {event['id']}")
+    elif extraction.get("skipped") or extraction.get("error"):
+        print(f"  (auto-extraction did not run: {extraction.get('skipped') or extraction.get('error')})")
+        print(f"Next: aipm extract {event['id']}")
+    else:
+        print()
+        print(render_extract(extraction))
     return 0
 
 
@@ -431,6 +491,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    init_parser = subparsers.add_parser("init", help="define/initialize the project")
+    init_parser.add_argument("name")
+    init_parser.add_argument("--description", default=None)
+    init_parser.add_argument("--team", nargs="*", default=[], help="team member names")
+
     note_parser = subparsers.add_parser("note", help="append a manual_note raw event")
     note_parser.add_argument("text")
     note_parser.add_argument("--source", default="pm_note")
@@ -483,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
     as_json = args.json
 
     with httpx.Client(base_url=base_url) as client:
+        if args.command == "init":
+            return cmd_init(client, args.name, args.description, args.team, as_json)
         if args.command == "note":
             return cmd_add_raw(client, "manual_note", args.text, args.source, as_json)
         if args.command == "email-in":

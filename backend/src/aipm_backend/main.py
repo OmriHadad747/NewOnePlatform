@@ -1,7 +1,13 @@
 """Backend API: wraps ai-engine and owns the event log.
 
-Event endpoints:
-  POST /events  -- append a new event (validated against current state)
+Project / event endpoints:
+  POST /project -- define the project (name, description, team); writes a
+                   project_initialized event that frames later extraction.
+  GET  /project -- the current project metadata
+  POST /events  -- append a new event (validated against current state). If
+                   AIPM_AUTO_EXTRACT is on (default) and the event is a
+                   raw-input event with text, extraction runs in the same
+                   request and its result is returned under `extraction`.
   GET  /events  -- list the full event log, in order
   GET  /state   -- the current projected project state
 
@@ -51,9 +57,9 @@ from aipm.extraction.providers import ExtractionProvider
 from aipm.projection import ProjectionError, apply_event, project
 from aipm.review import review_state as _review_state
 
-from aipm_backend import storage
-from aipm_backend.extraction import get_provider
-from aipm_backend.models import EventIn, ExtractRequest, serialize_state
+from aipm_backend import config, storage
+from aipm_backend.extraction import get_provider, get_provider_optional
+from aipm_backend.models import EventIn, ExtractRequest, ProjectIn, serialize_state
 
 app = FastAPI(title="AI PM Backend")
 
@@ -78,60 +84,17 @@ def _write_outbound_event(action: dict, source: str, source_event_id: str) -> di
     return asdict(event)
 
 
-@app.post("/events", status_code=201)
-def create_event(event_in: EventIn) -> dict:
-    try:
-        new_event = Event(**event_in.model_dump())
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+def _run_extraction(source: Event, events: list[Event], provider: ExtractionProvider) -> dict:
+    """Extract from one raw event: write a proposal for anything needing
+    approval, auto-execute info_request actions, and surface conflicts.
 
-    events = storage.read_events()
-    state = project(events)
-
-    try:
-        apply_event(state, new_event)
-    except ProjectionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    storage.write_event(new_event)
-    return asdict(new_event)
-
-
-@app.get("/events")
-def list_events() -> list[dict]:
-    return [asdict(event) for event in storage.read_events()]
-
-
-@app.get("/state")
-def get_state() -> dict:
-    events = storage.read_events()
-    state = project(events)
-    return serialize_state(state)
-
-
-@app.post("/extract", status_code=201)
-def extract(
-    req: ExtractRequest,
-    provider: ExtractionProvider = Depends(get_provider),
-) -> dict:
-    events = storage.read_events()
-
-    source = next((e for e in events if e.id == req.source_event_id), None)
-    if source is None:
-        raise HTTPException(status_code=404, detail=f"event {req.source_event_id!r} not found")
-    if source.type not in RAW_INPUT_TYPES or not source.raw_text:
-        raise HTTPException(
-            status_code=400,
-            detail=f"event {req.source_event_id!r} is not a raw-input event with text",
-        )
-
+    Pure of HTTP concerns -- callers (POST /extract, the POST /events auto
+    path) decide how to handle a provider failure (it propagates here).
+    Returns: {proposal, dropped, executed, conflicts}.
+    """
     state = project(events)
     prompt = build_prompt(source.raw_text, state)
-
-    try:
-        result = provider.extract(prompt)
-    except Exception as exc:  # provider/network failure -> 502
-        raise HTTPException(status_code=502, detail=f"extraction failed: {exc}") from exc
+    result = provider.extract(prompt)
 
     grounded, dropped = filter_grounded(result, source.raw_text)
     payload = grounded.to_payload(asserted_by=provider.name)
@@ -168,6 +131,103 @@ def extract(
     ]
 
     return {"proposal": proposal, "dropped": dropped, "executed": executed, "conflicts": conflicts}
+
+
+@app.post("/project", status_code=201)
+def init_project(project_in: ProjectIn) -> dict:
+    event = Event(
+        id=f"proj_{uuid.uuid4().hex[:12]}",
+        type="project_initialized",
+        timestamp=_now(),
+        source="cli:init",
+        # exclude_unset so a re-init only overwrites the fields actually
+        # provided -- omitted fields keep their previous value (merge semantics).
+        payload=project_in.model_dump(exclude_unset=True),
+    )
+    storage.write_event(event)
+    return asdict(event)
+
+
+@app.get("/project")
+def get_project() -> dict:
+    return project(storage.read_events()).meta
+
+
+@app.post("/events", status_code=201)
+def create_event(
+    event_in: EventIn,
+    provider: ExtractionProvider | None = Depends(get_provider_optional),
+) -> dict:
+    try:
+        new_event = Event(**event_in.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    events = storage.read_events()
+    state = project(events)
+
+    try:
+        apply_event(state, new_event)
+    except ProjectionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    storage.write_event(new_event)
+
+    # Auto-extraction: when a raw-input event lands, run extraction in the same
+    # request so the system advances on its own. Degrades gracefully -- if no
+    # provider is configured, or the provider fails, the event is still
+    # appended and `extraction` reports why nothing ran.
+    extraction = None
+    if (
+        config.auto_extract()
+        and new_event.type in RAW_INPUT_TYPES
+        and new_event.raw_text
+    ):
+        if provider is None:
+            extraction = {"skipped": "no extraction provider configured"}
+        else:
+            try:
+                extraction = _run_extraction(new_event, storage.read_events(), provider)
+            except Exception as exc:  # provider/network failure -- don't fail the append
+                extraction = {"error": f"auto-extraction failed: {exc}"}
+
+    return {**asdict(new_event), "extraction": extraction}
+
+
+@app.get("/events")
+def list_events() -> list[dict]:
+    return [asdict(event) for event in storage.read_events()]
+
+
+@app.get("/state")
+def get_state() -> dict:
+    events = storage.read_events()
+    state = project(events)
+    return serialize_state(state)
+
+
+@app.post("/extract", status_code=201)
+def extract(
+    req: ExtractRequest,
+    provider: ExtractionProvider = Depends(get_provider),
+) -> dict:
+    events = storage.read_events()
+
+    source = next((e for e in events if e.id == req.source_event_id), None)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"event {req.source_event_id!r} not found")
+    if source.type not in RAW_INPUT_TYPES or not source.raw_text:
+        raise HTTPException(
+            status_code=400,
+            detail=f"event {req.source_event_id!r} is not a raw-input event with text",
+        )
+
+    try:
+        return _run_extraction(source, events, provider)
+    except HTTPException:
+        raise
+    except Exception as exc:  # provider/network failure -> 502
+        raise HTTPException(status_code=502, detail=f"extraction failed: {exc}") from exc
 
 
 @app.post("/review-state")

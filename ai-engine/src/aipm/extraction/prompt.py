@@ -103,11 +103,24 @@ def summarize_state(state: ProjectState) -> str:
     return "\n".join(lines) if lines else "(empty -- no entities yet)"
 
 
+def summarize_meta(meta: dict) -> str:
+    """A compact text summary of project-level context (name, goal, team)."""
+    lines: list[str] = []
+    for key in ("name", "description", "team"):
+        value = meta.get(key)
+        if not value:
+            continue
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(v) for v in value)
+        lines.append(f"  {key}: {value}")
+    return "\n".join(lines)
+
+
 def build_prompt(raw_text: str, state: ProjectState) -> ExtractionPrompt:
-    suffix = (
-        "CURRENT PROJECT STATE:\n"
-        f"{summarize_state(state)}\n\n"
-        "RAW EVENT TEXT:\n"
-        f"{raw_text}"
-    )
-    return ExtractionPrompt(prefix=build_prefix(), suffix=suffix)
+    parts: list[str] = []
+    meta_summary = summarize_meta(state.meta)
+    if meta_summary:
+        parts.append(f"PROJECT:\n{meta_summary}\n")
+    parts.append(f"CURRENT PROJECT STATE:\n{summarize_state(state)}\n")
+    parts.append(f"RAW EVENT TEXT:\n{raw_text}")
+    return ExtractionPrompt(prefix=build_prefix(), suffix="\n".join(parts))

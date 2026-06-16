@@ -24,6 +24,12 @@ class ExtractRequest(BaseModel):
     source_event_id: str
 
 
+class ProjectIn(BaseModel):
+    name: str
+    description: str | None = None
+    team: list[str] = Field(default_factory=list)
+
+
 def serialize_state(state: ProjectState) -> dict[str, Any]:
     """Render a ProjectState as JSON: one table per entity type, plus actions."""
     result: dict[str, Any] = {
@@ -37,4 +43,5 @@ def serialize_state(state: ProjectState) -> dict[str, Any]:
         for entity_type, table in state.entities.items()
     }
     result["actions"] = [asdict(action) for action in state.actions]
+    result["meta"] = dict(state.meta)
     return result

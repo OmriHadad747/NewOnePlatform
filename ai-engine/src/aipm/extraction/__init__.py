@@ -6,7 +6,12 @@ testable.
 """
 
 from aipm.extraction.grounding import check_grounding, filter_grounded, is_grounded
-from aipm.extraction.prompt import ExtractionPrompt, build_prompt, summarize_state
+from aipm.extraction.prompt import (
+    ExtractionPrompt,
+    build_prompt,
+    summarize_meta,
+    summarize_state,
+)
 from aipm.extraction.providers import (
     CATALOG,
     ExtractionProvider,
@@ -22,6 +27,7 @@ __all__ = [
     "ExtractionPrompt",
     "build_prompt",
     "summarize_state",
+    "summarize_meta",
     "is_grounded",
     "check_grounding",
     "filter_grounded",

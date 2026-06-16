@@ -44,6 +44,39 @@ def test_create_then_read_back():
     assert task.history[0].asserted_by == "tester"
 
 
+def _project_initialized(event_id: str, **meta) -> Event:
+    return Event(
+        id=event_id,
+        type="project_initialized",
+        timestamp="2025-01-01T00:00:00Z",
+        source="cli:init",
+        payload=dict(meta),
+    )
+
+
+def test_empty_state_has_empty_meta():
+    assert project([]).meta == {}
+
+
+def test_project_initialized_sets_meta():
+    state = project([_project_initialized("p1", name="Apollo", team=["alice", "bob"])])
+    assert state.meta == {"name": "Apollo", "team": ["alice", "bob"]}
+
+
+def test_project_initialized_merges_on_reinit():
+    state = project([
+        _project_initialized("p1", name="Apollo", team=["alice"]),
+        _project_initialized("p2", name="Apollo 2", description="now with rovers"),
+    ])
+    assert state.meta == {"name": "Apollo 2", "team": ["alice"], "description": "now with rovers"}
+
+
+def test_project_initialized_does_not_touch_entities():
+    state = project([_project_initialized("p1", name="Apollo")])
+    assert all(table == {} for table in state.entities.values())
+    assert state.actions == []
+
+
 def test_update_merges_fields_and_records_history():
     events = [
         _human_approval(

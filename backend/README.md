@@ -5,15 +5,27 @@ This is the only thing `cli/` (and later `frontend/`) talk to.
 
 ## Endpoints
 
+- `POST /project` -- define the project: body `{"name", "description"?,
+  "team"?}`. Writes a `project_initialized` event whose payload sets
+  project-level metadata on `/state` (`meta`). This context is folded into
+  the extraction prompt so the model has framing. Re-posting merges: only the
+  fields you send are overwritten.
+- `GET /project` -- the current project metadata (`{}` before any init).
 - `POST /events` -- append a new event. The event is projected against the
   current state first; if it would produce an invalid delta (e.g. update
   to a non-existent entity), it's rejected with `400` and never written to
-  the log.
+  the log. **Auto-extraction:** when `AIPM_AUTO_EXTRACT` is on (default) and
+  the event is a raw-input event with text, extraction runs in the same
+  request -- the response includes an `extraction` field with the same shape
+  `/extract` returns (or `{"skipped": ...}` / `{"error": ...}` if no provider
+  is configured or the provider failed; the event is still appended either
+  way). Set `AIPM_AUTO_EXTRACT=0` to drive extraction manually via `/extract`.
 - `GET /events` -- the full event log, in order.
 - `GET /state` -- the current projected project state: one table per
-  entity type (each entity with its current `fields` and `history`), plus
-  an `actions` list of approved actions (`{type, category, payload,
-  source_event_id, asserted_by, asserted_at, source_span}`).
+  entity type (each entity with its current `fields` and `history`), an
+  `actions` list of approved actions (`{type, category, payload,
+  source_event_id, asserted_by, asserted_at, source_span}`), and `meta`
+  (project name/description/team).
 
 Only `human_approval` events carry a payload that affects `/state` --
 `deltas` (entity creates/updates) and `actions` (`consequential` actions
@@ -63,11 +75,16 @@ Two providers ship today, both behind the same `ExtractionProvider` contract:
 - **`gemini`** -- Google Gemini (default model `gemini-2.5-flash`). Needs
   `GEMINI_API_KEY` (or `GOOGLE_API_KEY`); override with `AIPM_GEMINI_MODEL`.
 
-`AIPM_EXTRACTION_PROVIDER` chooses which one `/extract` uses; it defaults to
+`AIPM_EXTRACTION_PROVIDER` chooses which one extraction uses; it defaults to
 the cheapest in the catalog (`gemini`). Set it to `claude` to extract via
 Claude Haiku. Each provider sends the stable prompt prefix in its own cache
 channel (Claude: a `cache_control` system block; Gemini: implicit prefix
 caching) so the instructions are billed once.
+
+`AIPM_AUTO_EXTRACT` (default on) controls whether `POST /events` extracts
+automatically as raw events arrive. With a provider configured, posting a
+transcript/email/note advances the whole loop in one step; with no provider,
+extraction is skipped and the event is still logged.
 
 Copy `.env.example` to `.env` (loaded automatically if `python-dotenv` is
 installed) and fill in the key for whichever provider you're using.

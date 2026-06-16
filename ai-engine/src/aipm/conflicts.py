@@ -8,6 +8,7 @@ here blocks a proposal; conflicts are advisory.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from aipm.state import ProjectState
@@ -19,10 +20,12 @@ _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
 _DONE_STATUSES = {"done", "completed", "closed"}
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 
 @dataclass
 class ConflictWarning:
-    type: str       # "deadline_regression" | "task_done_with_open_dep" | "risk_downgraded"
+    type: str       # "deadline_regression" | "task_done_with_open_dep" | "risk_downgraded" | "project_deadline_exceeded"
     entity_id: str
     detail: str
 
@@ -52,6 +55,13 @@ def detect_conflicts(deltas: list[dict], state: ProjectState) -> list[ConflictWa
 
         elif entity_type == "Risk":
             w = _check_risk_downgrade(op, entity_id, fields, state)
+            if w:
+                warnings.append(w)
+
+        # Timeline breach applies to any entity type: if the project has a known
+        # end date, any proposed date field beyond it is a conflict to surface.
+        if project_end := state.meta.get("end_date"):
+            w = _check_project_deadline(entity_type, entity_id, fields, project_end)
             if w:
                 warnings.append(w)
 
@@ -103,6 +113,27 @@ def _check_task_done(op: str, entity_id: str, fields: dict, state: ProjectState)
                     f"on '{upstream_id}' (current status: "
                     f"'{upstream.fields.get('status', 'unknown')}'). "
                     f"Dependency: {dep_id}."
+                ),
+            )
+    return None
+
+
+def _check_project_deadline(
+    entity_type: str, entity_id: str, fields: dict, project_end: str
+) -> ConflictWarning | None:
+    """Flag any ISO date field that falls after the project end date.
+
+    The LLM picks field names freely, so we scan all field values rather than a
+    fixed field-name list. One warning per delta (the first offending field).
+    """
+    for field_name, value in fields.items():
+        if isinstance(value, str) and _ISO_DATE_RE.match(value) and value > project_end:
+            return ConflictWarning(
+                type="project_deadline_exceeded",
+                entity_id=entity_id,
+                detail=(
+                    f"{entity_type} '{entity_id}': {field_name}={value} is after "
+                    f"project end date {project_end}."
                 ),
             )
     return None

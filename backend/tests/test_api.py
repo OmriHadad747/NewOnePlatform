@@ -640,3 +640,156 @@ def test_email_approval_off_requires_explicit_approve(client, monkeypatch):
 
     assert reply.json()["approvals"] is None
     assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
+
+
+# --- project dates & deadline conflict ----------------------------------------
+
+
+def test_init_project_with_dates(client):
+    response = client.post(
+        "/project",
+        json={"name": "Apollo", "start_date": "2026-01-01", "end_date": "2026-11-28"},
+    )
+    assert response.status_code == 201
+    meta = client.get("/project").json()
+    assert meta["start_date"] == "2026-01-01"
+    assert meta["end_date"] == "2026-11-28"
+
+
+def test_project_deadline_exceeded_creates_raise_flag_proposal(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Apollo", "start_date": "2026-01-01", "end_date": "2026-11-28"})
+
+    # Claude proposes a deadline past the project end
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "create", "Deadline", "launch",
+                    {"due_date": "2027-01-15", "title": "Product launch"},
+                    source_span="launch scheduled for January 15 next year",
+                )
+            ]
+        )
+    )
+    response = client.post(
+        "/events", json=_raw_event("raw_1", "launch scheduled for January 15 next year.")
+    )
+    extraction = response.json()["extraction"]
+
+    # conflict is reported ...
+    assert any(c["type"] == "project_deadline_exceeded" for c in extraction["conflicts"])
+
+    # ... and a consequential raise_flag is injected alongside the delta (Option A)
+    proposal = extraction["proposal"]
+    assert proposal is not None
+    actions = proposal["payload"]["actions"]
+    assert any(
+        a["type"] == "raise_flag" and a["payload"]["review_rule"] == "project_deadline_exceeded"
+        for a in actions
+    )
+    assert any(d["entity_id"] == "launch" for d in proposal["payload"]["deltas"])
+
+
+def test_no_deadline_conflict_without_project_end_date(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "create", "Deadline", "d1", {"due_date": "2099-01-01"},
+                    source_span="some far future date",
+                )
+            ]
+        )
+    )
+    response = client.post("/events", json=_raw_event("raw_1", "some far future date"))
+    conflicts = response.json()["extraction"]["conflicts"]
+    assert not any(c["type"] == "project_deadline_exceeded" for c in conflicts)
+
+
+# --- nudge / escalation -------------------------------------------------------
+
+
+def test_deferred_reply_sends_nudge(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    reply = client.post("/events", json=_email_reply("raw_2", "Thanks for the update!"))
+
+    approvals = reply.json()["approvals"]
+    assert [n["proposal_id"] for n in approvals["nudged"]] == [proposal_id]
+    assert approvals["escalated"] == []
+    assert approvals["approved"] == []
+    assert any(
+        e["type"] == "email_sent" and e["source"] == "agent:approval-nudge"
+        for e in client.get("/events").json()
+    )
+    assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
+
+
+def test_second_deferred_reply_sends_escalation(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    client.post("/events", json=_email_reply("raw_2", "Not relevant."))      # nudge
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    reply2 = client.post("/events", json=_email_reply("raw_3", "Still not relevant."))  # escalate
+
+    approvals = reply2.json()["approvals"]
+    assert approvals["nudged"] == []
+    assert [e["proposal_id"] for e in approvals["escalated"]] == [proposal_id]
+    assert any(
+        e["type"] == "email_sent" and e["source"] == "agent:approval-escalation"
+        for e in client.get("/events").json()
+    )
+    assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
+
+
+def test_third_deferred_reply_silently_ignored(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    client.post("/events", json=_email_reply("raw_2", "nope"))   # nudge
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    client.post("/events", json=_email_reply("raw_3", "nope"))   # escalation
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    reply3 = client.post("/events", json=_email_reply("raw_4", "nope"))  # quiet
+
+    approvals = reply3.json()["approvals"]
+    assert approvals["nudged"] == []
+    assert approvals["escalated"] == []
+    # exactly one nudge and one escalation across the whole exchange
+    events = client.get("/events").json()
+    assert sum(1 for e in events if e["source"] == "agent:approval-nudge") == 1
+    assert sum(1 for e in events if e["source"] == "agent:approval-escalation") == 1
+    assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
+
+
+def test_no_nudge_without_prior_approval_request(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    # A proposal that never had an approval-request email sent (hand-posted,
+    # bypassing _run_extraction) must not be nudged on a deferred reply.
+    client.post("/events", json={
+        "id": "prop_manual",
+        "type": "agent_proposal",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {
+            "deltas": [],
+            "actions": [{
+                "type": "raise_flag", "category": "consequential",
+                "payload": {"title": "Vendor delay"},
+                "provenance": {"asserted_by": "test"},
+            }],
+            "source_event_id": "x", "provider": "test",
+        },
+    })
+    assert [p["id"] for p in client.get("/proposals").json()] == ["prop_manual"]
+
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    reply = client.post("/events", json=_email_reply("raw_2", "Just checking in."))
+    assert reply.json()["approvals"]["nudged"] == []

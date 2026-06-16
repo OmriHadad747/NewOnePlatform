@@ -199,3 +199,62 @@ def test_multiple_conflicts_returned():
 
 def test_no_conflicts_empty_deltas():
     assert detect_conflicts([], ProjectState.empty()) == []
+
+
+# --- project deadline exceeded ------------------------------------------------
+
+
+def test_no_conflict_when_no_project_end_date():
+    state = ProjectState.empty()
+    delta = _delta("create", "Deadline", "d1", due_date="2099-12-31")
+    assert detect_conflicts([delta], state) == []
+
+
+def test_project_deadline_exceeded_detected():
+    state = ProjectState.empty()
+    state.meta["end_date"] = "2026-11-28"
+    delta = _delta("create", "Deadline", "sprint-end", due_date="2026-12-15")
+    warnings = detect_conflicts([delta], state)
+    assert len(warnings) == 1
+    assert warnings[0].type == "project_deadline_exceeded"
+    assert warnings[0].entity_id == "sprint-end"
+    assert "2026-12-15" in warnings[0].detail
+    assert "2026-11-28" in warnings[0].detail
+
+
+def test_project_deadline_not_exceeded_on_same_day():
+    state = ProjectState.empty()
+    state.meta["end_date"] = "2026-11-28"
+    delta = _delta("create", "Deadline", "d1", due_date="2026-11-28")
+    assert detect_conflicts([delta], state) == []
+
+
+def test_project_deadline_exceeded_on_any_entity_type():
+    state = ProjectState.empty()
+    state.meta["end_date"] = "2026-11-28"
+    delta = _delta("create", "Task", "t1", due_date="2027-01-01")
+    warnings = detect_conflicts([delta], state)
+    assert len(warnings) == 1
+    assert warnings[0].type == "project_deadline_exceeded"
+
+
+def test_project_deadline_ignores_non_date_fields():
+    state = ProjectState.empty()
+    state.meta["end_date"] = "2026-11-28"
+    delta = _delta("create", "Task", "t1", title="Launch by 2027 if possible", status="open")
+    assert detect_conflicts([delta], state) == []
+
+
+def test_project_deadline_exceeded_combined_with_other_conflicts():
+    state = _state_with(
+        Deadline={"d1": _entity("Deadline", "d1", due_date="2026-10-01")},
+    )
+    state.meta["end_date"] = "2026-11-28"
+    deltas = [
+        _delta("update", "Deadline", "d1", due_date="2026-09-01"),  # regression
+        _delta("create", "Task", "t2", due_date="2027-03-01"),      # exceeds project end
+    ]
+    warnings = detect_conflicts(deltas, state)
+    types = {w.type for w in warnings}
+    assert "deadline_regression" in types
+    assert "project_deadline_exceeded" in types

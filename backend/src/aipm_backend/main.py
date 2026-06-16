@@ -178,6 +178,47 @@ def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
     return event
 
 
+def _has_approval_request(proposal_id: str, events: list[Event]) -> bool:
+    """True if an approval-request email was already sent for this proposal."""
+    return any(
+        e.type == "email_sent"
+        and e.source == "agent:approval-request"
+        and e.payload.get("payload", {}).get("proposal_id") == proposal_id
+        for e in events
+    )
+
+
+# Follow-ups after the initial approval request, in order. The reply state
+# machine uses how many have already gone out to decide the next step:
+# 0 sent -> nudge, 1 sent -> escalate, >=2 -> go quiet.
+_FOLLOWUP_SOURCES = ("agent:approval-nudge", "agent:approval-escalation")
+
+
+def _followup_count(proposal_id: str, events: list[Event]) -> int:
+    """How many follow-up emails (nudge + escalation) were sent for this proposal."""
+    return sum(
+        1 for e in events
+        if e.type == "email_sent"
+        and e.source in _FOLLOWUP_SOURCES
+        and e.payload.get("payload", {}).get("proposal_id") == proposal_id
+    )
+
+
+def _send_followup(proposal: Event, events: list[Event], *, source: str, subject: str, body: str) -> dict:
+    """Send (stub) a follow-up email about an unaddressed pending proposal."""
+    action = {
+        "type": "send_email",
+        "category": "info_request",
+        "payload": {
+            "to": _approval_recipient(events, proposal.payload),
+            "subject": subject,
+            "body": body,
+            "proposal_id": proposal.id,
+        },
+    }
+    return _write_outbound_event(action, source=source, source_event_id=proposal.id)
+
+
 def _resolve_approvals_from_reply(
     reply: Event, provider: ExtractionProvider
 ) -> dict | None:
@@ -186,6 +227,10 @@ def _resolve_approvals_from_reply(
     Runs only when proposals are actually pending. The resolver distinguishes a
     real authorization ("yes, open the ticket") from merely answering a question
     ("yes, we need PayPal"), so a stray "yes" never fires an action.
+
+    Proposals this reply did not address (and that we already asked about) are
+    chased: a nudge on the first miss, an escalation on the second; after that
+    we stop emailing but leave the proposal pending.
     """
     pending = _pending_proposals(storage.read_events())
     if not pending:
@@ -198,7 +243,9 @@ def _resolve_approvals_from_reply(
     result = provider.resolve_approvals(prompt)
 
     by_id = {p.id: p for p in pending}
-    approved, rejected = [], []
+    approved: list[dict] = []
+    rejected: list[dict] = []
+    resolved_ids: set[str] = set()
     for res in result.resolutions:
         target = by_id.get(res.proposal_id)
         if target is None:
@@ -206,13 +253,54 @@ def _resolve_approvals_from_reply(
         if res.decision == "approve":
             approval = _apply_approval(target, storage.read_events(), source=f"email:{reply.source}")
             approved.append(asdict(approval))
+            resolved_ids.add(res.proposal_id)
         elif res.decision == "reject":
             rejection = _reject_proposal(target, source=f"email:{reply.source}", reason=res.reason_span)
             rejected.append(asdict(rejection))
+            resolved_ids.add(res.proposal_id)
+        # "defer" leaves the proposal pending -- handled by the chase loop below.
+
+    # Chase the proposals this reply ignored: nudge once, escalate on the
+    # second miss, then go quiet (proposal stays pending, visible in /proposals).
+    nudged: list[dict] = []
+    escalated: list[dict] = []
+    current = storage.read_events()
+    for proposal in pending:
+        if proposal.id in resolved_ids:
+            continue
+        if not _has_approval_request(proposal.id, current):
+            continue  # never asked about this one yet -- nothing to follow up on
+        summary = _summarize_proposal_payload(proposal.payload)
+        count = _followup_count(proposal.id, current)
+        if count == 0:
+            _send_followup(
+                proposal, current, source="agent:approval-nudge",
+                subject=f"Still waiting for your response: {summary[:60]}",
+                body=(
+                    "We received your reply but it didn't address our pending request. "
+                    f"We still need your approval on: {summary}. "
+                    "Please reply to approve or decline."
+                ),
+            )
+            nudged.append({"proposal_id": proposal.id, "summary": summary})
+        elif count == 1:
+            _send_followup(
+                proposal, current, source="agent:approval-escalation",
+                subject=f"Escalation: no response after 2 attempts -- {summary[:50]}",
+                body=(
+                    f"Two approval requests for '{summary}' went unaddressed. "
+                    f"Flagging this. Proposal {proposal.id} stays pending until "
+                    "explicitly approved or declined."
+                ),
+            )
+            escalated.append({"proposal_id": proposal.id, "summary": summary})
+        # count >= 2: already escalated -- stay quiet.
 
     return {
         "approved": approved,
         "rejected": rejected,
+        "nudged": nudged,
+        "escalated": escalated,
         "resolutions": result.to_dict()["resolutions"],
     }
 
@@ -232,9 +320,10 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
     grounded, dropped = filter_grounded(result, source.raw_text)
     payload = grounded.to_payload(asserted_by=provider.name)
 
+    raw_conflicts = detect_conflicts(payload["deltas"], state)
     conflicts = [
         {"type": w.type, "entity_id": w.entity_id, "detail": w.detail}
-        for w in detect_conflicts(payload["deltas"], state)
+        for w in raw_conflicts
     ]
 
     # `info_request` actions are routine info-gathering the agent does on its
@@ -245,6 +334,23 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
     payload["actions"] = [a for a in payload["actions"] if a["category"] == "consequential"]
     payload["source_event_id"] = source.id
     payload["provider"] = provider.name
+
+    # A date past the project end is not just advisory: attach a consequential
+    # raise_flag so the PM must explicitly acknowledge the timeline breach when
+    # they approve. Option A -- the offending delta stays in the proposal; the
+    # flag rides alongside it.
+    for w in raw_conflicts:
+        if w.type == "project_deadline_exceeded":
+            payload["actions"].append({
+                "type": "raise_flag",
+                "category": "consequential",
+                "payload": {
+                    "entity_id": w.entity_id,
+                    "reason": w.detail,
+                    "review_rule": "project_deadline_exceeded",
+                },
+                "provenance": {"asserted_by": "conflict-detector"},
+            })
 
     proposal = None
     approval_request = None

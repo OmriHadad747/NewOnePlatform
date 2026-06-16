@@ -162,7 +162,9 @@ def render_email_approvals(approvals: dict) -> str:
 
     approved = approvals.get("approved", [])
     rejected = approvals.get("rejected", [])
-    if not approved and not rejected:
+    nudged = approvals.get("nudged", [])
+    escalated = approvals.get("escalated", [])
+    if not approved and not rejected and not nudged and not escalated:
         return "Approval check: your reply did not authorize any pending request."
 
     lines = ["Approval resolved from your reply", "================================="]
@@ -179,6 +181,17 @@ def render_email_approvals(approvals: dict) -> str:
         reason = payload.get("reason")
         suffix = f" ({reason})" if reason else ""
         lines.append(f"  ✗ Rejected {payload.get('rejects', '?')}{suffix}")
+
+    if nudged:
+        lines.append("")
+        lines.append("Reply didn't address these -- sent a reminder (info_request):")
+        for item in nudged:
+            lines.append(f"  >> [SIMULATED] email_sent: still waiting on '{item['summary'][:60]}'")
+    if escalated:
+        lines.append("")
+        lines.append("No response after 2 attempts -- escalated (proposal stays pending):")
+        for item in escalated:
+            lines.append(f"  >> [SIMULATED] email_sent: escalating '{item['summary'][:60]}'")
     return "\n".join(lines)
 
 
@@ -335,18 +348,26 @@ def cmd_init(
     name: str,
     description: str | None,
     team: list[str],
+    start_date: str | None,
+    end_date: str | None,
     as_json: bool = False,
 ) -> int:
     """Define the project so later extraction has framing.
 
     Only sends the fields actually provided, so re-running `init` with a
-    single flag updates just that field (the backend merges).
+    single flag updates just that field (the backend merges). A brand-new
+    project should carry start/end dates (tentative is fine); they anchor the
+    extractor's date resolution and the project-deadline conflict check.
     """
     payload: dict = {"name": name}
     if description is not None:
         payload["description"] = description
     if team:
         payload["team"] = team
+    if start_date is not None:
+        payload["start_date"] = start_date
+    if end_date is not None:
+        payload["end_date"] = end_date
     response = client.post("/project", json=payload)
     if response.status_code >= 400:
         return _error(response)
@@ -358,6 +379,12 @@ def cmd_init(
             print(f"  {description}")
         if team:
             print(f"  team: {', '.join(team)}")
+        if start_date:
+            print(f"  start: {start_date}")
+        if end_date:
+            print(f"  end:   {end_date}")
+        if not start_date and not end_date:
+            print("  (tip: set --start/--end so dates and deadlines stay anchored)")
         print("Next: stream events with aipm note / email-in / transcript")
     return 0
 
@@ -541,6 +568,14 @@ def _build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("name")
     init_parser.add_argument("--description", default=None)
     init_parser.add_argument("--team", nargs="*", default=[], help="team member names")
+    init_parser.add_argument(
+        "--start", dest="start_date", default=None, metavar="YYYY-MM-DD",
+        help="project start date (tentative is fine; update anytime with aipm init)",
+    )
+    init_parser.add_argument(
+        "--end", dest="end_date", default=None, metavar="YYYY-MM-DD",
+        help="project end / target deadline (tentative is fine; anchors date checks)",
+    )
 
     note_parser = subparsers.add_parser("note", help="append a manual_note raw event")
     note_parser.add_argument("text")
@@ -600,7 +635,10 @@ def main(argv: list[str] | None = None) -> int:
 
     with httpx.Client(base_url=base_url, timeout=timeout) as client:
         if args.command == "init":
-            return cmd_init(client, args.name, args.description, args.team, as_json)
+            return cmd_init(
+                client, args.name, args.description, args.team,
+                args.start_date, args.end_date, as_json,
+            )
         if args.command == "note":
             return cmd_add_raw(client, "manual_note", args.text, args.source, as_json)
         if args.command == "email-in":

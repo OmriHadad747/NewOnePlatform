@@ -28,6 +28,8 @@ class ProjectIn(BaseModel):
     name: str
     description: str | None = None
     team: list[str] = Field(default_factory=list)
+    start_date: str | None = None
+    end_date: str | None = None
 
 
 def serialize_state(state: ProjectState) -> dict[str, Any]:

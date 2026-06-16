@@ -41,7 +41,7 @@ cd backend  && pytest -q
 uvicorn aipm_backend.main:app --reload      # needs an API key for live extraction
 
 # drive it
-aipm init "Project" --team alice bob
+aipm init "Project" --start 2026-06-01 --end 2026-11-28 --team alice bob
 aipm transcript "..."   # or: note / email-in --from x@y.com
 aipm state | events | proposals | review
 ```

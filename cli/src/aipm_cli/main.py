@@ -501,6 +501,22 @@ def cmd_review(client: httpx.Client, as_json: bool = False) -> int:
     return 0
 
 
+def cmd_close(client: httpx.Client, reason: str | None, as_json: bool = False) -> int:
+    """Close the project. Extraction is rejected after this point."""
+    body = {"reason": reason} if reason else {}
+    response = client.post("/project/close", json=body)
+    if response.status_code >= 400:
+        return _error(response)
+    if as_json:
+        print(json.dumps(response.json(), indent=2))
+    else:
+        print("Project closed.")
+        if reason:
+            print(f"  Reason: {reason}")
+        print("  The event log is preserved. Run `aipm events` or `aipm state` to review.")
+    return 0
+
+
 def cmd_approve(client: httpx.Client, proposal_id: str, as_json: bool = False) -> int:
     response = client.post(f"/proposals/{proposal_id}/approve")
     if response.status_code >= 400:
@@ -640,6 +656,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     approve_parser.add_argument("proposal_id")
 
+    close_parser = subparsers.add_parser(
+        "close", help="close the project -- stops further extraction"
+    )
+    close_parser.add_argument("--reason", default=None, help="optional close reason for the audit trail")
+
     return parser
 
 
@@ -682,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_review(client, as_json)
         if args.command == "approve":
             return cmd_approve(client, args.proposal_id, as_json)
+        if args.command == "close":
+            return cmd_close(client, args.reason, as_json)
 
     return 1
 

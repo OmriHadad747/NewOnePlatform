@@ -422,6 +422,26 @@ def get_project() -> dict:
     return project(storage.read_events()).meta
 
 
+@app.post("/project/close", status_code=201)
+def close_project(body: dict = {}) -> dict:
+    """Mark the project as closed. Extraction is rejected on closed projects.
+
+    Accepts an optional JSON body with a `reason` string for the audit trail.
+    """
+    events = storage.read_events()
+    if project(events).meta.get("status") == "closed":
+        raise HTTPException(status_code=409, detail="project is already closed")
+    event = Event(
+        id=f"close_{uuid.uuid4().hex[:12]}",
+        type="project_closed",
+        timestamp=_now(),
+        source="cli:close",
+        payload={"reason": body.get("reason", "")} if isinstance(body, dict) else {},
+    )
+    storage.write_event(event)
+    return {"closed": True, "event_id": event.id}
+
+
 @app.post("/events", status_code=201)
 def create_event(
     event_in: EventIn,
@@ -468,11 +488,14 @@ def create_event(
         and new_event.type in RAW_INPUT_TYPES
         and new_event.raw_text
     ):
-        if provider is None:
+        current_events = storage.read_events()
+        if project(current_events).meta.get("status") == "closed":
+            extraction = {"skipped": "project is closed"}
+        elif provider is None:
             extraction = {"skipped": "no extraction provider configured"}
         else:
             try:
-                extraction = _run_extraction(new_event, storage.read_events(), provider)
+                extraction = _run_extraction(new_event, current_events, provider)
             except Exception as exc:  # provider/network failure -- don't fail the append
                 extraction = {"error": f"auto-extraction failed: {exc}"}
 
@@ -506,6 +529,9 @@ def extract(
             status_code=400,
             detail=f"event {req.source_event_id!r} is not a raw-input event with text",
         )
+
+    if project(events).meta.get("status") == "closed":
+        raise HTTPException(status_code=409, detail="project is closed -- no further extraction")
 
     try:
         return _run_extraction(source, events, provider)

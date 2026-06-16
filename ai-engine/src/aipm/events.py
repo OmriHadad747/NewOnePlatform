@@ -14,6 +14,8 @@ from pathlib import Path
 # project_initialized: defines the project (name, description, team). Its
 #   payload sets project-level metadata on the state (used to frame
 #   extraction); it does not carry entity deltas or actions.
+# project_closed: marks the project as closed. Sets meta["status"]="closed"
+#   in the projection; the backend rejects new extraction on a closed project.
 # transcript_ingested, email_reply_received, manual_note: raw input -- a
 #   transcript, an email reply, or a note typed directly into the platform
 #   by a participant. All three are extraction input; none of them carry
@@ -38,6 +40,7 @@ from pathlib import Path
 #   the projection -- they're logged for the audit trail, like raw input.
 EVENT_TYPES = {
     "project_initialized",
+    "project_closed",
     "transcript_ingested",
     "email_reply_received",
     "manual_note",

@@ -42,6 +42,11 @@ def apply_event(state: ProjectState, event: Event) -> None:
         # Last write wins; re-initializing merges into existing metadata.
         state.meta.update(event.payload)
         return
+    if event.type == "project_closed":
+        state.meta["status"] = "closed"
+        if "reason" in event.payload:
+            state.meta["close_reason"] = event.payload["reason"]
+        return
     if event.type in STATE_CHANGING_EVENT_TYPES:
         for delta in event.payload.get("deltas", []):
             apply_delta(state, delta, event)

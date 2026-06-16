@@ -18,6 +18,7 @@ from aipm.events import Event
 from aipm.projection import ProjectionError, apply_event, project
 
 from aipm_cli.main import (
+    cmd_add_raw,
     cmd_append,
     cmd_approve,
     cmd_events,
@@ -25,6 +26,11 @@ from aipm_cli.main import (
     cmd_proposals,
     cmd_replay,
     cmd_state,
+    render_approval,
+    render_events,
+    render_extract,
+    render_proposals,
+    render_state,
     _resolve,
 )
 
@@ -86,14 +92,14 @@ def test_resolve_reads_fields_and_history_length():
 def test_cmd_state_prints_response_json(capsys):
     client = _client(lambda r: httpx.Response(200, json={"Task": {}}))
 
-    assert cmd_state(client) == 0
+    assert cmd_state(client, as_json=True) == 0
     assert json.loads(capsys.readouterr().out) == {"Task": {}}
 
 
 def test_cmd_events_prints_response_json(capsys):
     client = _client(lambda r: httpx.Response(200, json=[{"id": "evt_1"}]))
 
-    assert cmd_events(client) == 0
+    assert cmd_events(client, as_json=True) == 0
     assert json.loads(capsys.readouterr().out) == [{"id": "evt_1"}]
 
 
@@ -102,7 +108,7 @@ def test_cmd_append_success(tmp_path, capsys):
     event_file.write_text(json.dumps({"id": "evt_1"}))
     client = _client(lambda r: httpx.Response(201, json={"id": "evt_1"}))
 
-    assert cmd_append(client, str(event_file)) == 0
+    assert cmd_append(client, str(event_file), as_json=True) == 0
     assert json.loads(capsys.readouterr().out) == {"id": "evt_1"}
 
 
@@ -123,7 +129,7 @@ def test_cmd_extract_posts_source_event_and_prints(capsys):
         seen["body"] = json.loads(request.content)
         return httpx.Response(201, json={"proposal": {"id": "prop_1"}, "dropped": []})
 
-    assert cmd_extract(_client(handler), "raw_1") == 0
+    assert cmd_extract(_client(handler), "raw_1", as_json=True) == 0
     assert seen["path"] == "/extract"
     assert seen["body"] == {"source_event_id": "raw_1"}
     assert json.loads(capsys.readouterr().out)["proposal"]["id"] == "prop_1"
@@ -137,7 +143,7 @@ def test_cmd_extract_error(capsys):
 
 def test_cmd_proposals_prints_list(capsys):
     client = _client(lambda r: httpx.Response(200, json=[{"id": "prop_1"}]))
-    assert cmd_proposals(client) == 0
+    assert cmd_proposals(client, as_json=True) == 0
     assert json.loads(capsys.readouterr().out) == [{"id": "prop_1"}]
 
 
@@ -148,9 +154,143 @@ def test_cmd_approve_posts_and_prints(capsys):
         seen["path"] = request.url.path
         return httpx.Response(201, json={"id": "appr_1", "payload": {"approves": "prop_1"}})
 
-    assert cmd_approve(_client(handler), "prop_1") == 0
+    assert cmd_approve(_client(handler), "prop_1", as_json=True) == 0
     assert seen["path"] == "/proposals/prop_1/approve"
     assert json.loads(capsys.readouterr().out)["payload"]["approves"] == "prop_1"
+
+
+# --- input commands -----------------------------------------------------------
+
+
+def test_cmd_add_raw_posts_event_with_generated_id(capsys):
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(201, json={"id": seen["body"]["id"]})
+
+    assert cmd_add_raw(_client(handler), "email_reply_received", "Vendor is late", "vendor@x.com") == 0
+    assert seen["path"] == "/events"
+    assert seen["body"]["type"] == "email_reply_received"
+    assert seen["body"]["raw_text"] == "Vendor is late"
+    assert seen["body"]["source"] == "vendor@x.com"
+    assert seen["body"]["id"].startswith("raw_")
+    out = capsys.readouterr().out
+    assert "email_reply_received" in out
+    assert "aipm extract" in out  # nudges the next step
+
+
+def test_cmd_add_raw_reports_backend_error(capsys):
+    client = _client(lambda r: httpx.Response(400, json={"detail": "bad event"}))
+    assert cmd_add_raw(client, "manual_note", "x", "pm_note") == 1
+    assert "bad event" in capsys.readouterr().err
+
+
+# --- renderers ----------------------------------------------------------------
+
+
+def test_render_extract_shows_simulated_outbound_and_conflicts():
+    body = {
+        "proposal": {
+            "id": "prop_1",
+            "payload": {
+                "provider": "claude",
+                "source_event_id": "raw_1",
+                "deltas": [
+                    {"op": "update", "entity_type": "Deadline", "entity_id": "sprint-end",
+                     "fields": {"due_date": "2025-02-10"}},
+                ],
+                "actions": [
+                    {"type": "escalate_to_management", "category": "consequential",
+                     "payload": {"to": "director"}},
+                ],
+            },
+        },
+        "executed": [
+            {"id": "out_1", "type": "email_sent",
+             "payload": {"type": "send_email", "category": "info_request",
+                         "payload": {"to": "bob", "subject": "Status?"}}},
+        ],
+        "conflicts": [
+            {"type": "deadline_regression", "entity_id": "sprint-end",
+             "detail": "due_date moves earlier 2025-03-01 -> 2025-02-10"},
+        ],
+        "dropped": ["dropped delta create Risk 'fake': ungrounded span 'made up'"],
+    }
+    out = render_extract(body)
+    assert "prop_1" in out
+    assert "[SIMULATED] email_sent" in out
+    assert "to=bob" in out
+    assert "deadline_regression on sprint-end" in out
+    assert "ungrounded" in out
+    assert "aipm approve prop_1" in out
+
+
+def test_render_extract_no_proposal():
+    body = {"proposal": None, "executed": [], "conflicts": [], "dropped": []}
+    out = render_extract(body)
+    assert "Proposal: none" in out
+    assert "Auto-executed: none" in out
+
+
+def test_render_events_flags_outbound_as_simulated():
+    events = [
+        {"id": "raw_1", "type": "email_reply_received", "source": "vendor",
+         "raw_text": "The vendor API is delayed.", "payload": {}},
+        {"id": "out_1", "type": "email_sent", "source": "agent:claude",
+         "payload": {"type": "send_email", "payload": {"to": "bob"}}},
+    ]
+    out = render_events(events)
+    assert "email_reply_received" in out
+    assert "[SIMULATED]" in out
+    assert "to=bob" in out
+    assert '"The vendor API is delayed."' in out
+
+
+def test_render_state_shows_entities_and_actions():
+    state = {
+        "Risk": {"vendor-delay": {"fields": {"severity": "high", "status": "open"},
+                                  "history": [{}, {}]}},
+        "actions": [{"type": "escalate_to_management", "category": "consequential",
+                     "payload": {"to": "director"}}],
+    }
+    out = render_state(state)
+    assert "Risk:" in out
+    assert "vendor-delay: severity=high, status=open  [2 update(s)]" in out
+    assert "escalate_to_management" in out
+
+
+def test_render_state_empty():
+    out = render_state({"actions": []})
+    assert "(no entities yet)" in out
+    assert "Approved actions: none" in out
+
+
+def test_render_proposals_lists_pending():
+    proposals = [
+        {"id": "prop_1", "payload": {"source_event_id": "raw_1", "provider": "claude",
+                                     "deltas": [{"op": "create", "entity_type": "Risk", "entity_id": "r1"}],
+                                     "actions": [{"type": "open_ticket", "category": "consequential"}]}},
+    ]
+    out = render_proposals(proposals)
+    assert "prop_1" in out
+    assert "create Risk 'r1'" in out
+    assert "open_ticket" in out
+    assert "aipm approve prop_1" in out
+
+
+def test_render_approval_shows_simulated_actions():
+    approval = {
+        "id": "appr_1",
+        "payload": {"approves": "prop_1",
+                    "deltas": [{"op": "create"}],
+                    "actions": [{"type": "open_ticket", "payload": {"system": "jira"}}]},
+    }
+    out = render_approval(approval)
+    assert "Approved prop_1 -> appr_1" in out
+    assert "[SIMULATED] open_ticket" in out
+    assert "system=jira" in out
 
 
 def test_cmd_approve_error(capsys):

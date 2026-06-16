@@ -793,3 +793,51 @@ def test_no_nudge_without_prior_approval_request(client, monkeypatch):
     _use_auto_provider(ExtractionResult(), ApprovalResult([]))
     reply = client.post("/events", json=_email_reply("raw_2", "Just checking in."))
     assert reply.json()["approvals"]["nudged"] == []
+
+
+def test_escalation_goes_to_pm_when_set(client, monkeypatch):
+    """Escalation email is addressed to the project PM, not the original action target."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Apollo", "pm": "pm@company.com", "tech_lead": "tl@company.com"})
+    proposal_id = _pending_consequential_proposal(client)
+
+    # first deferred reply -> nudge (still goes to original recipient, not PM)
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    client.post("/events", json=_email_reply("raw_2", "Not relevant."))
+
+    # second deferred reply -> escalation
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    reply2 = client.post("/events", json=_email_reply("raw_3", "Still not relevant."))
+
+    assert [e["proposal_id"] for e in reply2.json()["approvals"]["escalated"]] == [proposal_id]
+
+    # escalation email must be addressed to the PM
+    events = client.get("/events").json()
+    esc = next(e for e in events if e["source"] == "agent:approval-escalation")
+    assert esc["payload"]["payload"]["to"] == "pm@company.com"
+
+
+def test_escalation_falls_back_to_tech_lead_when_no_pm(client, monkeypatch):
+    """When no PM is set, escalation falls back to tech_lead."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Apollo", "tech_lead": "tl@company.com"})
+    proposal_id = _pending_consequential_proposal(client)
+
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    client.post("/events", json=_email_reply("raw_2", "Not relevant."))
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    client.post("/events", json=_email_reply("raw_3", "Still not relevant."))
+
+    events = client.get("/events").json()
+    esc = next(e for e in events if e["source"] == "agent:approval-escalation")
+    assert esc["payload"]["payload"]["to"] == "tl@company.com"
+
+
+def test_init_project_with_pm_and_tech_lead(client):
+    client.post(
+        "/project",
+        json={"name": "Apollo", "pm": "pm@company.com", "tech_lead": "tl@company.com"},
+    )
+    meta = client.get("/project").json()
+    assert meta["pm"] == "pm@company.com"
+    assert meta["tech_lead"] == "tl@company.com"

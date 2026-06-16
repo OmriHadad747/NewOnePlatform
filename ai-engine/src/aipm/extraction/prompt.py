@@ -109,7 +109,7 @@ def summarize_state(state: ProjectState) -> str:
 def summarize_meta(meta: dict) -> str:
     """A compact text summary of project-level context (name, goal, team)."""
     lines: list[str] = []
-    for key in ("name", "description", "team", "start_date", "end_date"):
+    for key in ("name", "description", "team", "start_date", "end_date", "pm", "tech_lead"):
         value = meta.get(key)
         if not value:
             continue

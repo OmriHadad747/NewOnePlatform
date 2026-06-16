@@ -30,6 +30,8 @@ class ProjectIn(BaseModel):
     team: list[str] = Field(default_factory=list)
     start_date: str | None = None
     end_date: str | None = None
+    pm: str | None = None        # email address of the project manager (escalation target)
+    tech_lead: str | None = None  # email address of the tech lead (fallback escalation target)
 
 
 def serialize_state(state: ProjectState) -> dict[str, Any]:

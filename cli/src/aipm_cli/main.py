@@ -350,6 +350,8 @@ def cmd_init(
     team: list[str],
     start_date: str | None,
     end_date: str | None,
+    pm: str | None,
+    tech_lead: str | None,
     as_json: bool = False,
 ) -> int:
     """Define the project so later extraction has framing.
@@ -358,6 +360,7 @@ def cmd_init(
     single flag updates just that field (the backend merges). A brand-new
     project should carry start/end dates (tentative is fine); they anchor the
     extractor's date resolution and the project-deadline conflict check.
+    --pm / --tech-lead set the escalation email target for unaddressed approvals.
     """
     payload: dict = {"name": name}
     if description is not None:
@@ -368,6 +371,10 @@ def cmd_init(
         payload["start_date"] = start_date
     if end_date is not None:
         payload["end_date"] = end_date
+    if pm is not None:
+        payload["pm"] = pm
+    if tech_lead is not None:
+        payload["tech_lead"] = tech_lead
     response = client.post("/project", json=payload)
     if response.status_code >= 400:
         return _error(response)
@@ -383,8 +390,14 @@ def cmd_init(
             print(f"  start: {start_date}")
         if end_date:
             print(f"  end:   {end_date}")
+        if pm:
+            print(f"  pm:    {pm}")
+        if tech_lead:
+            print(f"  tech-lead: {tech_lead}")
         if not start_date and not end_date:
             print("  (tip: set --start/--end so dates and deadlines stay anchored)")
+        if not pm and not tech_lead:
+            print("  (tip: set --pm / --tech-lead so escalation emails reach the right person)")
         print("Next: stream events with aipm note / email-in / transcript")
     return 0
 
@@ -576,6 +589,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--end", dest="end_date", default=None, metavar="YYYY-MM-DD",
         help="project end / target deadline (tentative is fine; anchors date checks)",
     )
+    init_parser.add_argument(
+        "--pm", default=None, metavar="EMAIL",
+        help="project manager email -- receives escalation emails when approvals go unanswered",
+    )
+    init_parser.add_argument(
+        "--tech-lead", dest="tech_lead", default=None, metavar="EMAIL",
+        help="tech lead email -- fallback escalation target if no PM is set",
+    )
 
     note_parser = subparsers.add_parser("note", help="append a manual_note raw event")
     note_parser.add_argument("text")
@@ -637,7 +658,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "init":
             return cmd_init(
                 client, args.name, args.description, args.team,
-                args.start_date, args.end_date, as_json,
+                args.start_date, args.end_date, args.pm, args.tech_lead, as_json,
             )
         if args.command == "note":
             return cmd_add_raw(client, "manual_note", args.text, args.source, as_json)

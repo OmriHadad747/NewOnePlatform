@@ -204,13 +204,31 @@ def _followup_count(proposal_id: str, events: list[Event]) -> int:
     )
 
 
-def _send_followup(proposal: Event, events: list[Event], *, source: str, subject: str, body: str) -> dict:
-    """Send (stub) a follow-up email about an unaddressed pending proposal."""
+def _escalation_recipient(events: list[Event]) -> str | None:
+    """The PM or tech lead stored in project meta, if set -- escalation target."""
+    meta = project(events).meta
+    return meta.get("pm") or meta.get("tech_lead")
+
+
+def _send_followup(
+    proposal: Event,
+    events: list[Event],
+    *,
+    source: str,
+    subject: str,
+    body: str,
+    to: str | None = None,
+) -> dict:
+    """Send (stub) a follow-up email about an unaddressed pending proposal.
+
+    `to` overrides the default recipient (used for escalations that must go to
+    PM/tech lead rather than the original action target).
+    """
     action = {
         "type": "send_email",
         "category": "info_request",
         "payload": {
-            "to": _approval_recipient(events, proposal.payload),
+            "to": to or _approval_recipient(events, proposal.payload),
             "subject": subject,
             "body": body,
             "proposal_id": proposal.id,
@@ -284,6 +302,7 @@ def _resolve_approvals_from_reply(
             )
             nudged.append({"proposal_id": proposal.id, "summary": summary})
         elif count == 1:
+            esc_to = _escalation_recipient(current)
             _send_followup(
                 proposal, current, source="agent:approval-escalation",
                 subject=f"Escalation: no response after 2 attempts -- {summary[:50]}",
@@ -292,6 +311,7 @@ def _resolve_approvals_from_reply(
                     f"Flagging this. Proposal {proposal.id} stays pending until "
                     "explicitly approved or declined."
                 ),
+                to=esc_to,
             )
             escalated.append({"proposal_id": proposal.id, "summary": summary})
         # count >= 2: already escalated -- stay quiet.

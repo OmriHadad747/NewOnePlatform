@@ -65,6 +65,13 @@ def test_resolved_question_not_flagged():
     assert result.issues == []
 
 
+@pytest.mark.parametrize("status", ["closed", "answered", "decided", "DONE", "Resolved"])
+def test_terminal_question_statuses_not_flagged(status):
+    # vocabulary-tolerant: the LLM may answer a question as "closed"/"answered"
+    state = _state_with(OpenQuestion={"q1": _entity("OpenQuestion", "q1", status=status)})
+    assert review_state(state, now=_NOW).issues == []
+
+
 def test_open_question_without_status_is_flagged():
     state = _state_with(OpenQuestion={
         "q1": _entity("OpenQuestion", "q1", description="pending question"),
@@ -182,6 +189,24 @@ def test_resolved_high_risk_not_flagged():
     })
     result = review_state(state, now=_NOW)
     assert result.issues == []
+
+
+def test_high_risk_without_status_is_flagged():
+    # a high risk that was never explicitly resolved should still be chased
+    state = _state_with(Risk={"r1": _entity("Risk", "r1", severity="high")})
+    result = review_state(state, now=_NOW)
+    assert result.issues[0].rule == "unowned_high_risk"
+
+
+def test_critical_severity_is_flagged():
+    state = _state_with(Risk={"r1": _entity("Risk", "r1", severity="critical", status="open")})
+    result = review_state(state, now=_NOW)
+    assert result.issues[0].rule == "unowned_high_risk"
+
+
+def test_mitigated_high_risk_not_flagged():
+    state = _state_with(Risk={"r1": _entity("Risk", "r1", severity="high", status="mitigated")})
+    assert review_state(state, now=_NOW).issues == []
 
 
 # --- overdue deadlines ---------------------------------------------------------

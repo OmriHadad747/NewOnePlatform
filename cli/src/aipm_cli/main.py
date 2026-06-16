@@ -547,7 +547,12 @@ def main(argv: list[str] | None = None) -> int:
     base_url = os.environ.get("AIPM_BACKEND_URL", DEFAULT_BASE_URL)
     as_json = args.json
 
-    with httpx.Client(base_url=base_url) as client:
+    # Generous timeout: with auto-extraction on, POST /events runs a real LLM
+    # call synchronously, which easily exceeds httpx's 5s default. Overridable
+    # via AIPM_TIMEOUT (seconds).
+    timeout = float(os.environ.get("AIPM_TIMEOUT", "180"))
+
+    with httpx.Client(base_url=base_url, timeout=timeout) as client:
         if args.command == "init":
             return cmd_init(client, args.name, args.description, args.team, as_json)
         if args.command == "note":

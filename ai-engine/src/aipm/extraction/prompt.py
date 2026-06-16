@@ -11,6 +11,7 @@ decides how to send the prefix (cached) and the suffix (fresh).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from aipm.entities import ACTION_CATEGORIES, ACTION_TYPE_OUTBOUND_EVENTS, ENTITY_TYPES
 from aipm.state import ProjectState
@@ -32,6 +33,8 @@ Rules:
 - Use `create` for a new entity, `update` to change an existing one (look at
   the current state to tell which, and to reuse existing entity ids).
 - Keep entity ids short, lowercase, hyphenated, and stable across events.
+- Write dates as ISO YYYY-MM-DD. If a date is missing its year, resolve it to
+  the soonest occurrence on/after TODAY (given in the variable section below).
 - Propose an action only when the text implies the agent should DO something.
   Use category `info_request` for routine info-gathering the agent can send on
   its own, with type `send_email` or `send_reminder` (e.g. emailing a teammate
@@ -116,8 +119,9 @@ def summarize_meta(meta: dict) -> str:
     return "\n".join(lines)
 
 
-def build_prompt(raw_text: str, state: ProjectState) -> ExtractionPrompt:
-    parts: list[str] = []
+def build_prompt(raw_text: str, state: ProjectState, today: str | None = None) -> ExtractionPrompt:
+    today = today or date.today().isoformat()
+    parts: list[str] = [f"TODAY: {today}\n"]
     meta_summary = summarize_meta(state.meta)
     if meta_summary:
         parts.append(f"PROJECT:\n{meta_summary}\n")

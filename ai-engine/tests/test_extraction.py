@@ -173,6 +173,18 @@ def test_prompt_omits_project_block_when_no_meta():
     assert "RAW EVENT TEXT:" in prompt.suffix
 
 
+def test_prompt_includes_today_for_date_resolution():
+    prompt = build_prompt("Demo by July 15.", ProjectState.empty(), today="2026-06-16")
+    assert "TODAY: 2026-06-16" in prompt.suffix
+
+
+def test_prompt_defaults_today_to_current_date():
+    from datetime import date
+
+    prompt = build_prompt("anything", ProjectState.empty())
+    assert f"TODAY: {date.today().isoformat()}" in prompt.suffix
+
+
 # --- provider selection --------------------------------------------------
 
 

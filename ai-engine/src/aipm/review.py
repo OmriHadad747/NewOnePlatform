@@ -4,11 +4,15 @@ Scans the current ProjectState and returns action proposals for follow-up.
 Info-request proposals (status pings, clarification asks) auto-execute like
 /extract; consequential proposals (raise_flag, escalate) need human approval.
 
+Status comparisons are case- and vocabulary-tolerant: the LLM picks the word,
+so an answered question may read "closed"/"answered"/"resolved". Terminal
+statuses (see the sets below) are treated as done and not chased again.
+
 Rules:
-- OpenQuestion where status != "resolved" -> send_email (info_request)
+- OpenQuestion whose status is not terminal -> send_email (info_request)
 - Task where status in ("blocked", "stuck") -> send_email (info_request)
-- Task where status == "in_progress" -> send_reminder (info_request)
-- Risk where severity == "high" and status == "open" and no owner -> raise_flag (consequential)
+- Task where status is "in_progress" -> send_reminder (info_request)
+- Risk of high/critical severity, status not terminal, no owner -> raise_flag (consequential)
 - Deadline where due_date is in the past -> escalate_to_management (consequential)
 """
 
@@ -18,6 +22,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 
 from aipm.state import ProjectState
+
+# Terminal statuses, kept vocabulary-tolerant because the LLM picks the word
+# (an answered question may come back as "closed", "answered", "resolved", ...).
+# Anything in these sets counts as "done" and is not chased again.
+_RESOLVED_QUESTION_STATUSES = {"resolved", "closed", "answered", "decided", "done"}
+_RESOLVED_RISK_STATUSES = {"resolved", "closed", "mitigated", "accepted", "retired"}
+_HIGH_SEVERITIES = {"high", "critical"}
 
 
 @dataclass
@@ -54,7 +65,8 @@ def _owner(entity_fields: dict) -> str:
 
 def _check_open_questions(state: ProjectState, result: ReviewResult) -> None:
     for qid, entity in state.entities.get("OpenQuestion", {}).items():
-        if entity.fields.get("status") == "resolved":
+        status = (entity.fields.get("status") or "").lower()
+        if status in _RESOLVED_QUESTION_STATUSES:
             continue
         issue = ReviewIssue(
             rule="open_question",
@@ -78,7 +90,7 @@ def _check_open_questions(state: ProjectState, result: ReviewResult) -> None:
 
 def _check_blocked_tasks(state: ProjectState, result: ReviewResult) -> None:
     for tid, entity in state.entities.get("Task", {}).items():
-        if entity.fields.get("status") not in ("blocked", "stuck"):
+        if (entity.fields.get("status") or "").lower() not in ("blocked", "stuck"):
             continue
         issue = ReviewIssue(
             rule="blocked_task",
@@ -102,7 +114,7 @@ def _check_blocked_tasks(state: ProjectState, result: ReviewResult) -> None:
 
 def _check_in_progress_tasks(state: ProjectState, result: ReviewResult) -> None:
     for tid, entity in state.entities.get("Task", {}).items():
-        if entity.fields.get("status") != "in_progress":
+        if (entity.fields.get("status") or "").lower() not in ("in_progress", "in progress"):
             continue
         issue = ReviewIssue(
             rule="in_progress_task",
@@ -126,9 +138,10 @@ def _check_in_progress_tasks(state: ProjectState, result: ReviewResult) -> None:
 
 def _check_unowned_high_risks(state: ProjectState, result: ReviewResult) -> None:
     for rid, entity in state.entities.get("Risk", {}).items():
-        if entity.fields.get("status") != "open":
+        status = (entity.fields.get("status") or "").lower()
+        if status in _RESOLVED_RISK_STATUSES:
             continue
-        if entity.fields.get("severity") != "high":
+        if (entity.fields.get("severity") or "").lower() not in _HIGH_SEVERITIES:
             continue
         if entity.fields.get("owner") or entity.fields.get("assignee"):
             continue

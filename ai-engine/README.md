@@ -82,14 +82,35 @@ keeping this library's "no network surface" contract intact.
   ("which provider should the agent use?"). Today it's "cheapest available";
   a future agent can make it smarter without touching network code.
 
+## Conflict detection (Step 4)
+
+`aipm.conflicts.detect_conflicts(deltas, state)` checks a list of proposed
+deltas against the current state and returns a list of `ConflictWarning`
+objects. These are **advisory only** -- they surface semantic inconsistencies
+for the human reviewer to notice before approving; they never block a proposal.
+
+Three conflict types are detected:
+
+- **`deadline_regression`** -- a `Deadline`'s `due_date` is being moved
+  *earlier* than its current value (the normal case is a slip, i.e. later;
+  an earlier date is suspicious and should be confirmed).
+- **`task_done_with_open_dep`** -- a `Task` is marked `done`/`completed` but
+  it has at least one active `Dependency` whose upstream task isn't done yet.
+- **`risk_downgraded`** -- a `Risk`'s `severity` decreases (e.g. high →
+  medium) without also setting `status` to `resolved` or `closed`.
+
+Conflicts are detected in `ai-engine` (pure, no I/O) and surfaced by the
+backend's `/extract` response under the `"conflicts"` key.
+
 ## Project layout
 
 ```
 src/aipm/
   events.py       # Event model, JSONL event log read/append
-  entities.py      # Entity, ProvenanceRecord, Action models
+  entities.py      # Entity, ProvenanceRecord, Action models; outbound event mapping
   state.py          # ProjectState (entity tables + actions)
   projection.py     # apply_event(), project()
+  conflicts.py      # detect_conflicts() -- semantic conflict warnings
   extraction/       # pure extraction core: types, prompt, grounding, providers
 scenarios/          # replay scenarios (fixed event sequences + checkpoints)
 tests/               # unit tests + the replay/eval harness

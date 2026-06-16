@@ -246,5 +246,63 @@ def test_extract_auto_executes_info_request_actions(client):
     assert client.get("/state").json()["actions"] == []
 
 
+def test_extract_returns_no_conflicts_when_clean(client):
+    client.post("/events", json=_raw_event("raw_1", "The vendor API is delayed."))
+    _use_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "create", "Risk", "vendor-delay",
+                    {"severity": "high", "status": "open"},
+                    source_span="The vendor API is delayed",
+                )
+            ]
+        )
+    )
+    body = client.post("/extract", json={"source_event_id": "raw_1"}).json()
+    assert body["conflicts"] == []
+
+
+def test_extract_detects_deadline_regression(client):
+    # First establish a deadline in state via human_approval
+    setup = {
+        "id": "evt_setup",
+        "type": "human_approval",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {
+            "deltas": [
+                {
+                    "op": "create",
+                    "entity_type": "Deadline",
+                    "entity_id": "sprint-end",
+                    "fields": {"due_date": "2025-03-01", "status": "committed"},
+                    "provenance": {"asserted_by": "PM"},
+                }
+            ],
+            "actions": [],
+        },
+    }
+    client.post("/events", json=setup)
+
+    client.post("/events", json=_raw_event("raw_1", "We need to move the deadline to Feb 10."))
+    _use_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "update", "Deadline", "sprint-end",
+                    {"due_date": "2025-02-10"},
+                    source_span="We need to move the deadline to Feb 10",
+                )
+            ]
+        )
+    )
+
+    body = client.post("/extract", json={"source_event_id": "raw_1"}).json()
+    assert len(body["conflicts"]) == 1
+    assert body["conflicts"][0]["type"] == "deadline_regression"
+    assert body["conflicts"][0]["entity_id"] == "sprint-end"
+
+
 def test_approve_unknown_proposal_is_404(client):
     assert client.post("/proposals/nope/approve").status_code == 404

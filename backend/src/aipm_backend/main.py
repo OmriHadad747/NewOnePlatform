@@ -13,6 +13,11 @@ Extraction / approval flow (Step 3):
                                       (email_sent/reminder_sent); only
                                       consequential actions stay in the
                                       proposal, awaiting approval.
+                                      Returns: {proposal, dropped, executed,
+                                      conflicts} -- conflicts are semantic
+                                      warnings (deadline regression, task done
+                                      with open deps, risk downgraded) for the
+                                      human reviewer; advisory only, never block.
   GET  /proposals                  -- proposals still awaiting approval
   POST /proposals/{id}/approve     -- approve a proposal: write a
                                       human_approval that applies its
@@ -31,6 +36,7 @@ from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
 
+from aipm.conflicts import detect_conflicts
 from aipm.entities import outbound_event_type
 from aipm.events import RAW_INPUT_TYPES, Event
 from aipm.extraction import build_prompt, filter_grounded
@@ -122,6 +128,11 @@ def extract(
     grounded, dropped = filter_grounded(result, source.raw_text)
     payload = grounded.to_payload(asserted_by=provider.name)
 
+    conflicts = [
+        {"type": w.type, "entity_id": w.entity_id, "detail": w.detail}
+        for w in detect_conflicts(payload["deltas"], state)
+    ]
+
     # `info_request` actions are routine info-gathering the agent does on its
     # own -- execute (stub) them immediately and log the outbound event, with
     # no human_approval. `consequential` actions stay in the proposal,
@@ -148,7 +159,7 @@ def extract(
         for action in auto_actions
     ]
 
-    return {"proposal": proposal, "dropped": dropped, "executed": executed}
+    return {"proposal": proposal, "dropped": dropped, "executed": executed, "conflicts": conflicts}
 
 
 @app.get("/proposals")

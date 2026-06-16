@@ -36,9 +36,11 @@ model mutate state directly:
   `email_sent`/`reminder_sent` events -- **no approval needed**. The
   remaining `deltas` and `consequential` actions become a single
   `agent_proposal` event (**no state change**), or no proposal at all if
-  nothing is left. Returns `{"proposal": ... | null, "dropped": [...],
-  "executed": [...]}` -- the proposal (if any), the dropped (ungrounded)
-  items, and the outbound events written for auto-executed actions.
+  nothing is left. Returns `{"proposal": ... | null, "dropped": [...], "executed": [...],
+  "conflicts": [...]}` -- the proposal (if any), dropped (ungrounded) items,
+  outbound events written for auto-executed actions, and any semantic conflict
+  warnings (`deadline_regression`, `task_done_with_open_dep`, `risk_downgraded`)
+  for the human reviewer. Conflicts are advisory only -- never block.
 - `GET /proposals` -- the `agent_proposal` events that have no matching
   approval yet.
 - `POST /proposals/{id}/approve` -- writes a `human_approval` event carrying

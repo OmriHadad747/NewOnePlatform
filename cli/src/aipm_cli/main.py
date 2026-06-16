@@ -134,6 +134,14 @@ def render_extract(body: dict) -> str:
         for c in conflicts:
             lines.append(f"  ! {c['type']} on {c['entity_id']}: {c['detail']}")
 
+    clarifications = body.get("clarifications", [])
+    if clarifications:
+        lines.append("")
+        lines.append("Couldn't reconcile -- asked the author to clarify (info_request):")
+        for c in clarifications:
+            lines.append(f"  ? {c['entity_type']} '{c['entity_id']}': {c['reason']}")
+        lines.append("     (these were held out of the proposal until answered.)")
+
     if dropped:
         lines.append("")
         lines.append("Dropped (ungrounded -- not in the raw text, ignored):")
@@ -162,9 +170,10 @@ def render_email_approvals(approvals: dict) -> str:
 
     approved = approvals.get("approved", [])
     rejected = approvals.get("rejected", [])
+    fanned_out = approvals.get("fanned_out", [])
     nudged = approvals.get("nudged", [])
     escalated = approvals.get("escalated", [])
-    if not approved and not rejected and not nudged and not escalated:
+    if not approved and not rejected and not fanned_out and not nudged and not escalated:
         return "Approval check: your reply did not authorize any pending request."
 
     lines = ["Approval resolved from your reply", "================================="]
@@ -181,6 +190,13 @@ def render_email_approvals(approvals: dict) -> str:
         reason = payload.get("reason")
         suffix = f" ({reason})" if reason else ""
         lines.append(f"  ✗ Rejected {payload.get('rejects', '?')}{suffix}")
+
+    if fanned_out:
+        lines.append("")
+        lines.append("Batch approved -- now asking each owner to confirm their own ticket:")
+        for f in fanned_out:
+            tickets = ", ".join(f.get("tickets", []))
+            lines.append(f"  >> [SIMULATED] email_sent → {f['owner']}: confirm '{tickets}'  ({f['proposal_id']})")
 
     if nudged:
         lines.append("")
@@ -501,6 +517,43 @@ def cmd_review(client: httpx.Client, as_json: bool = False) -> int:
     return 0
 
 
+def render_open_tickets(body: dict) -> str:
+    """Human-readable view of an /open-tickets response (the batch proposal)."""
+    proposal = body.get("proposal")
+    if not proposal:
+        return body.get("message", "Nothing to do.")
+    actions = proposal["payload"].get("actions", [])
+    lines = [
+        "Ticket batch proposed",
+        "=====================",
+        f"Proposal {proposal['id']} -- {len(actions)} ticket(s), one per task:",
+    ]
+    for a in actions:
+        p = a.get("payload", {})
+        lines.append(f"  - {p.get('title', p.get('task_id', '?'))}  → owner: {p.get('owner', '?')}")
+    request = body.get("approval_request")
+    if request:
+        inner = request.get("payload", {}).get("payload", {})
+        lines.append("")
+        lines.append("Sent ONE approval email to the PM (not the whole team):")
+        lines.append(f"  >> [SIMULATED] email_sent → {inner.get('to', '?')}: {inner.get('subject', '')}")
+    lines.append("")
+    lines.append("Flow: PM approves the batch → each owner gets a final confirm email")
+    lines.append("      → only the owner's reply opens their ticket.")
+    lines.append(f"Next: PM replies by email, e.g.  aipm email-in \"yes, open them\" --from <pm>")
+    return "\n".join(lines)
+
+
+def cmd_open_tickets(client: httpx.Client, as_json: bool = False) -> int:
+    """Propose opening a ticket for every task that doesn't have one yet."""
+    response = client.post("/open-tickets")
+    if response.status_code >= 400:
+        return _error(response)
+    body = response.json()
+    print(json.dumps(body, indent=2) if as_json else render_open_tickets(body))
+    return 0
+
+
 def cmd_close(client: httpx.Client, reason: str | None, as_json: bool = False) -> int:
     """Close the project. Extraction is rejected after this point."""
     body = {"reason": reason} if reason else {}
@@ -656,6 +709,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     approve_parser.add_argument("proposal_id")
 
+    subparsers.add_parser(
+        "open-tickets",
+        help="propose opening a ticket per task (PM approves the batch, owners confirm each)",
+    )
+
     close_parser = subparsers.add_parser(
         "close", help="close the project -- stops further extraction"
     )
@@ -703,6 +761,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_review(client, as_json)
         if args.command == "approve":
             return cmd_approve(client, args.proposal_id, as_json)
+        if args.command == "open-tickets":
+            return cmd_open_tickets(client, as_json)
         if args.command == "close":
             return cmd_close(client, args.reason, as_json)
 

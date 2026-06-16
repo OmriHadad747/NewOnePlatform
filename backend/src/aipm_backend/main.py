@@ -44,6 +44,8 @@ Extraction / approval flow (Step 3):
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -112,13 +114,21 @@ def _pending_proposals(events: list[Event]) -> list[Event]:
 
 
 def _approval_recipient(events: list[Event], payload: dict) -> str:
-    """Who to ask for sign-off: an action's named owner, else the project team."""
-    for action in payload.get("actions", []):
-        to = action.get("payload", {}).get("to")
-        if to:
-            return to
-    team = project(events).meta.get("team") or []
-    return ", ".join(team) if team else "team"
+    """Who to ask for sign-off -- always ONE person, never the whole team.
+
+    A proposal may name its own approver (`payload["approver"]`) -- used for the
+    owner-confirmation stage, where each task owner signs off on their own
+    ticket. Absent that, approval is a project-manager decision: PM, then tech
+    lead, then a single team member. We never fan an approval out to the team.
+    """
+    if payload.get("approver"):
+        return payload["approver"]
+    meta = project(events).meta
+    return (
+        meta.get("pm")
+        or meta.get("tech_lead")
+        or (meta.get("team") or ["team"])[0]
+    )
 
 
 def _ask_for_approval(proposal: Event, events: list[Event]) -> dict:
@@ -163,6 +173,84 @@ def _apply_approval(proposal: Event, events: list[Event], source: str) -> Event:
     for action in approval.payload["actions"]:
         _write_outbound_event(action, source="agent:approved", source_event_id=approval.id)
     return approval
+
+
+def _is_ticket_batch(proposal: Event) -> bool:
+    """True if this proposal's actions still need a per-owner confirmation.
+
+    A ticket batch is the first gate: the PM authorizes opening tickets, but
+    each ticket carries `requires_owner_confirmation`, so approving the batch
+    does NOT open anything -- it fans out to the owners for the final say.
+    """
+    return any(
+        a.get("payload", {}).get("requires_owner_confirmation")
+        for a in proposal.payload.get("actions", [])
+    )
+
+
+def _approve_ticket_batch(batch: Event, source: str) -> dict:
+    """PM signs off on the batch -> fan out one confirmation proposal per owner.
+
+    The batch itself is recorded as approved (so it leaves the pending set) but
+    applies nothing: no ticket opens yet. For each owner we mint a fresh
+    proposal carrying just their ticket(s) and email THEM for the final
+    confirmation -- their reply (a normal email approval) is what opens it,
+    so the nudge/escalation ladder covers them too.
+    """
+    # Record the batch as approved, but with empty payload: nothing applied,
+    # nothing executed -- the tickets are deferred to owner confirmation.
+    approval = Event(
+        id=f"appr_{uuid.uuid4().hex[:12]}",
+        type="human_approval",
+        timestamp=_now(),
+        source=source,
+        payload={"deltas": [], "actions": [], "approves": batch.id},
+    )
+    storage.write_event(approval)
+
+    by_owner: dict[str, list[dict]] = defaultdict(list)
+    for action in batch.payload.get("actions", []):
+        owner = action.get("payload", {}).get("owner") or "team"
+        clean = deepcopy(action)
+        clean["payload"].pop("requires_owner_confirmation", None)
+        by_owner[owner].append(clean)
+
+    fanned: list[dict] = []
+    for owner, actions in by_owner.items():
+        proposal = Event(
+            id=f"prop_{uuid.uuid4().hex[:12]}",
+            type="agent_proposal",
+            timestamp=_now(),
+            source="agent:ticket-confirm",
+            payload={
+                "deltas": [],
+                "actions": actions,
+                "approver": owner,  # the owner has the final say on their ticket(s)
+                "provider": "ticket-planner",
+                "source_event_id": batch.id,
+            },
+        )
+        storage.write_event(proposal)
+        request = _ask_for_approval(proposal, storage.read_events())
+        fanned.append({
+            "proposal_id": proposal.id,
+            "owner": owner,
+            "tickets": [a.get("payload", {}).get("title", a["type"]) for a in actions],
+            "request": request,
+        })
+
+    return {"approval": asdict(approval), "fanned_out": fanned}
+
+
+def _resolve_proposal_approval(proposal: Event, events: list[Event], source: str):
+    """Approve a proposal: fan out if it's a ticket batch, else apply it.
+
+    Returns the human_approval Event for a normal approval, or a fan-out dict
+    `{approval, fanned_out}` for a ticket batch.
+    """
+    if _is_ticket_batch(proposal):
+        return _approve_ticket_batch(proposal, source)
+    return _apply_approval(proposal, events, source)
 
 
 def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
@@ -263,14 +351,21 @@ def _resolve_approvals_from_reply(
     by_id = {p.id: p for p in pending}
     approved: list[dict] = []
     rejected: list[dict] = []
+    fanned_out: list[dict] = []
     resolved_ids: set[str] = set()
     for res in result.resolutions:
         target = by_id.get(res.proposal_id)
         if target is None:
             continue
         if res.decision == "approve":
-            approval = _apply_approval(target, storage.read_events(), source=f"email:{reply.source}")
-            approved.append(asdict(approval))
+            outcome = _resolve_proposal_approval(
+                target, storage.read_events(), source=f"email:{reply.source}"
+            )
+            if isinstance(outcome, dict):  # ticket batch -> fanned out to owners
+                approved.append(outcome["approval"])
+                fanned_out.extend(outcome["fanned_out"])
+            else:
+                approved.append(asdict(outcome))
             resolved_ids.add(res.proposal_id)
         elif res.decision == "reject":
             rejection = _reject_proposal(target, source=f"email:{reply.source}", reason=res.reason_span)
@@ -319,10 +414,50 @@ def _resolve_approvals_from_reply(
     return {
         "approved": approved,
         "rejected": rejected,
+        "fanned_out": fanned_out,
         "nudged": nudged,
         "escalated": escalated,
         "resolutions": result.to_dict()["resolutions"],
     }
+
+
+def _unapplicable_deltas(deltas: list[dict], state) -> tuple[list[dict], list[tuple[dict, str]]]:
+    """Split deltas into (applicable, unclear) against current state.
+
+    Unclear = the model referenced something we can't reconcile: an `update` to
+    an entity that doesn't exist, or a `create` of one that already does. Rather
+    than let it fail at approval time (or silently drop it), we pull it out so
+    the caller can ask the author what they meant.
+    """
+    applicable: list[dict] = []
+    unclear: list[tuple[dict, str]] = []
+    for d in deltas:
+        exists = d["entity_id"] in state.entities.get(d["entity_type"], {})
+        if d["op"] == "update" and not exists:
+            unclear.append((d, f"no {d['entity_type']} '{d['entity_id']}' exists yet to update"))
+        elif d["op"] == "create" and exists:
+            unclear.append((d, f"{d['entity_type']} '{d['entity_id']}' already exists"))
+        else:
+            applicable.append(d)
+    return applicable, unclear
+
+
+def _send_clarification(source: Event, delta: dict, reason: str) -> dict:
+    """Email the author (stub) to ask what they meant by an unreconcilable delta."""
+    action = {
+        "type": "send_email",
+        "category": "info_request",
+        "payload": {
+            "to": source.source,
+            "subject": f"Quick clarification on {delta['entity_type']} '{delta['entity_id']}'",
+            "body": (
+                f"I couldn't record one change from your message -- {reason}. "
+                "Could you confirm what you meant so I can capture it correctly?"
+            ),
+            "entity_id": delta["entity_id"],
+        },
+    }
+    return _write_outbound_event(action, source="agent:clarification", source_event_id=source.id)
 
 
 def _run_extraction(source: Event, events: list[Event], provider: ExtractionProvider) -> dict:
@@ -331,7 +466,7 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
 
     Pure of HTTP concerns -- callers (POST /extract, the POST /events auto
     path) decide how to handle a provider failure (it propagates here).
-    Returns: {proposal, dropped, executed, conflicts}.
+    Returns: {proposal, dropped, executed, conflicts, clarifications}.
     """
     state = project(events)
     prompt = build_prompt(source.raw_text, state)
@@ -339,6 +474,19 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
 
     grounded, dropped = filter_grounded(result, source.raw_text)
     payload = grounded.to_payload(asserted_by=provider.name)
+
+    # Deltas we can't reconcile against state become clarification emails to the
+    # author, not silent failures -- the rest of the proposal proceeds normally.
+    payload["deltas"], unclear = _unapplicable_deltas(payload["deltas"], state)
+    clarifications = [
+        {
+            "entity_type": d["entity_type"],
+            "entity_id": d["entity_id"],
+            "reason": reason,
+            "request": _send_clarification(source, d, reason),
+        }
+        for d, reason in unclear
+    ]
 
     raw_conflicts = detect_conflicts(payload["deltas"], state)
     conflicts = [
@@ -399,6 +547,7 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
         "dropped": dropped,
         "executed": executed,
         "conflicts": conflicts,
+        "clarifications": clarifications,
     }
 
 
@@ -604,8 +753,86 @@ def approve_proposal(proposal_id: str) -> dict:
         raise HTTPException(status_code=404, detail=f"proposal {proposal_id!r} not found")
 
     try:
-        approval = _apply_approval(proposal, events, source="approval")
+        outcome = _resolve_proposal_approval(proposal, events, source="approval")
     except ProjectionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return asdict(approval)
+    # A ticket batch fans out to per-owner confirmation proposals instead of
+    # applying anything; a normal approval returns the human_approval event.
+    return outcome if isinstance(outcome, dict) else asdict(outcome)
+
+
+def _tasks_with_tickets(events: list[Event]) -> set[str]:
+    """Task ids that already have a ticket -- opened, or in a live proposal.
+
+    Keeps `open-tickets` idempotent: re-running it never double-proposes a
+    ticket for the same task. A ticket counts if its open_ticket carries the
+    `task_id`, whether it's already executed (ticket_opened) or still sitting
+    in a non-rejected proposal (batch or per-owner confirmation).
+    """
+    rejected = {e.payload.get("rejects") for e in events if e.type == "proposal_rejected"}
+    ticketed: set[str] = set()
+    for e in events:
+        if e.type == "ticket_opened":
+            tid = e.payload.get("payload", {}).get("task_id")
+            if tid:
+                ticketed.add(tid)
+        elif e.type == "agent_proposal" and e.id not in rejected:
+            for a in e.payload.get("actions", []):
+                if a.get("type") == "open_ticket":
+                    tid = a.get("payload", {}).get("task_id")
+                    if tid:
+                        ticketed.add(tid)
+    return ticketed
+
+
+@app.post("/open-tickets", status_code=201)
+def open_tickets() -> dict:
+    """Propose opening a ticket for every task that doesn't have one yet.
+
+    Two-gate flow: this builds ONE batch proposal (all tickets) and emails the
+    PM for sign-off. Approving the batch doesn't open anything -- it fans out a
+    confirmation to each task's owner, and only that owner's reply opens their
+    ticket. Skips tasks that already have a ticket; rejects a closed project.
+    """
+    events = storage.read_events()
+    if project(events).meta.get("status") == "closed":
+        raise HTTPException(status_code=409, detail="project is closed")
+
+    state = project(events)
+    already = _tasks_with_tickets(events)
+    actions = []
+    for tid, entity in state.entities.get("Task", {}).items():
+        if tid in already:
+            continue
+        owner = entity.fields.get("owner") or entity.fields.get("assignee") or "team"
+        actions.append({
+            "type": "open_ticket",
+            "category": "consequential",
+            "payload": {
+                "task_id": tid,
+                "title": entity.fields.get("title", tid),
+                "owner": owner,
+                "requires_owner_confirmation": True,
+            },
+            "provenance": {"asserted_by": "ticket-planner"},
+        })
+
+    if not actions:
+        return {"proposal": None, "message": "every task already has a ticket"}
+
+    proposal = Event(
+        id=f"prop_{uuid.uuid4().hex[:12]}",
+        type="agent_proposal",
+        timestamp=_now(),
+        source="agent:ticket-batch",
+        payload={
+            "deltas": [],
+            "actions": actions,
+            "provider": "ticket-planner",
+            "source_event_id": "open-tickets",
+        },
+    )
+    storage.write_event(proposal)
+    approval_request = _ask_for_approval(proposal, storage.read_events())
+    return {"proposal": asdict(proposal), "approval_request": approval_request}

@@ -841,3 +841,177 @@ def test_init_project_with_pm_and_tech_lead(client):
     meta = client.get("/project").json()
     assert meta["pm"] == "pm@company.com"
     assert meta["tech_lead"] == "tl@company.com"
+
+
+def test_approval_request_goes_to_pm_not_team(client, monkeypatch):
+    """A consequential proposal's approval email goes to the PM alone."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Apollo", "team": ["dana", "eran"], "pm": "pm@company.com"})
+    proposal_id = _pending_consequential_proposal(client)
+
+    ask = next(
+        e for e in client.get("/events").json()
+        if e["type"] == "email_sent" and e["payload"]["payload"].get("proposal_id") == proposal_id
+    )
+    assert ask["payload"]["payload"]["to"] == "pm@company.com"
+
+
+# --- project close ------------------------------------------------------------
+
+
+def test_close_project_blocks_extraction(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Apollo"})
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[ProposedDelta("create", "Risk", "r1", {}, source_span="the vendor API is delayed")]
+        )
+    )
+
+    close = client.post("/project/close", json={"reason": "shipped"})
+    assert close.status_code == 201
+    assert client.get("/project").json()["status"] == "closed"
+
+    # extraction is now refused on raw input ...
+    resp = client.post("/events", json=_raw_event("raw_1", "the vendor API is delayed"))
+    assert resp.json()["extraction"] == {"skipped": "project is closed"}
+    # ... and the explicit /extract path 409s (provider present, still refused)
+    _use_provider(ExtractionResult())
+    assert client.post("/extract", json={"source_event_id": "raw_1"}).status_code == 409
+
+
+def test_close_twice_is_conflict(client):
+    client.post("/project", json={"name": "Apollo"})
+    assert client.post("/project/close").status_code == 201
+    assert client.post("/project/close").status_code == 409
+
+
+# --- two-gate ticket opening --------------------------------------------------
+
+
+def _project_with_tasks(client):
+    """Seed a project with two tasks owned by different people."""
+    client.post("/project", json={"name": "Apollo", "team": ["dana", "eran"], "pm": "pm@company.com"})
+    client.post("/events", json=_human_approval(
+        "evt_tasks",
+        _delta("create", "Task", "api-scaffold", {"title": "API scaffold", "owner": "dana"}),
+        _delta("create", "Task", "quota-request", {"title": "Quota request", "owner": "eran"}),
+    ))
+
+
+def test_open_tickets_proposes_batch_to_pm(client):
+    _project_with_tasks(client)
+    body = client.post("/open-tickets").json()
+
+    actions = body["proposal"]["payload"]["actions"]
+    assert len(actions) == 2
+    assert all(a["payload"]["requires_owner_confirmation"] for a in actions)
+    # one approval email, to the PM
+    assert body["approval_request"]["payload"]["payload"]["to"] == "pm@company.com"
+    # nothing opened yet
+    assert not any(e["type"] == "ticket_opened" for e in client.get("/events").json())
+
+
+def test_open_tickets_is_idempotent(client):
+    _project_with_tasks(client)
+    client.post("/open-tickets")
+    # second call: both tasks already have a (pending) ticket
+    second = client.post("/open-tickets").json()
+    assert second["proposal"] is None
+
+
+def test_batch_approval_fans_out_to_owners_without_opening(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _project_with_tasks(client)
+    batch_id = client.post("/open-tickets").json()["proposal"]["id"]
+
+    # PM approves the batch by email
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(batch_id, "approve", "yes, open them")]),
+    )
+    reply = client.post("/events", json=_email_reply("raw_pm", "Yes, go ahead.", source="pm@company.com"))
+
+    approvals = reply.json()["approvals"]
+    # batch is approved but fans out -- still no ticket opened
+    assert len(approvals["fanned_out"]) == 2
+    owners = {f["owner"] for f in approvals["fanned_out"]}
+    assert owners == {"dana", "eran"}
+    assert not any(e["type"] == "ticket_opened" for e in client.get("/events").json())
+
+    # each owner now has a pending confirmation proposal, addressed to them
+    pending = client.get("/proposals").json()
+    assert {p["payload"]["approver"] for p in pending} == {"dana", "eran"}
+    asks = [
+        e["payload"]["payload"]["to"] for e in client.get("/events").json()
+        if e["type"] == "email_sent" and e["source"] == "agent:approval-request"
+        and e["payload"]["payload"].get("proposal_id") in {p["id"] for p in pending}
+    ]
+    assert set(asks) == {"dana", "eran"}
+
+
+def test_owner_confirmation_opens_only_their_ticket(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _project_with_tasks(client)
+    batch_id = client.post("/open-tickets").json()["proposal"]["id"]
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(batch_id, "approve", "yes")]),
+    )
+    client.post("/events", json=_email_reply("raw_pm", "Yes.", source="pm@company.com"))
+
+    # find dana's confirmation proposal
+    pending = client.get("/proposals").json()
+    dana_prop = next(p for p in pending if p["payload"]["approver"] == "dana")
+
+    # dana confirms -> her ticket opens, eran's does not
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(dana_prop["id"], "approve", "yes open mine")]),
+    )
+    client.post("/events", json=_email_reply("raw_dana", "Yes, open it.", source="dana"))
+
+    opened = [
+        e for e in client.get("/events").json() if e["type"] == "ticket_opened"
+    ]
+    assert len(opened) == 1
+    assert opened[0]["payload"]["payload"]["owner"] == "dana"
+    # eran's confirmation is still pending
+    assert any(p["payload"]["approver"] == "eran" for p in client.get("/proposals").json())
+
+
+# --- clarification on unreconcilable deltas -----------------------------------
+
+
+def test_unapplicable_update_triggers_clarification(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    # The model proposes updating a Decision that was never created.
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "update", "Decision", "ghost-decision", {"status": "decided"},
+                    source_span="we decided on the schema",
+                ),
+                ProposedDelta(
+                    "create", "Risk", "real-risk", {"severity": "high"},
+                    source_span="the vendor API is delayed",
+                ),
+            ]
+        )
+    )
+    resp = client.post("/events", json=_raw_event(
+        "raw_1", "we decided on the schema; also the vendor API is delayed"
+    ))
+    extraction = resp.json()["extraction"]
+
+    # the ghost update is held out and a clarification email goes to the author
+    assert [c["entity_id"] for c in extraction["clarifications"]] == ["ghost-decision"]
+    assert any(
+        e["type"] == "email_sent" and e["source"] == "agent:clarification"
+        for e in client.get("/events").json()
+    )
+    # the valid delta still made it into the proposal
+    kept = [d["entity_id"] for d in extraction["proposal"]["payload"]["deltas"]]
+    assert kept == ["real-risk"]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from aipm.approval import ApprovalResolution, ApprovalResult
 from aipm.extraction.types import ExtractionResult, ProposedAction, ProposedDelta
 
 from aipm_backend.extraction import StaticProvider, get_provider, get_provider_optional
@@ -28,9 +29,13 @@ def _use_provider(result: ExtractionResult):
     app.dependency_overrides[get_provider] = lambda: StaticProvider(result)
 
 
-def _use_auto_provider(result: ExtractionResult):
-    """Override the auto-extraction (POST /events) provider with a fixed fake."""
-    app.dependency_overrides[get_provider_optional] = lambda: StaticProvider(result)
+def _use_auto_provider(result: ExtractionResult, approval_result: ApprovalResult | None = None):
+    """Override the auto-extraction (POST /events) provider with a fixed fake.
+
+    The same provider serves both extraction and approval resolution; tests
+    re-call this between steps to swap what the fake returns.
+    """
+    app.dependency_overrides[get_provider_optional] = lambda: StaticProvider(result, approval_result)
 
 
 @pytest.fixture(autouse=True)
@@ -516,3 +521,122 @@ def test_auto_extract_skips_non_raw_events(client, monkeypatch):
         "/events", json=_human_approval("evt_1", _delta("create", "Task", "t1", {"status": "open"})),
     )
     assert response.json()["extraction"] is None
+
+
+# --- approval by email reply --------------------------------------------------
+
+
+def _email_reply(event_id, text, source="maya@orion.com"):
+    return {
+        "id": event_id,
+        "type": "email_reply_received",
+        "timestamp": "2025-02-03T10:00:00Z",
+        "source": source,
+        "raw_text": text,
+        "payload": {},
+    }
+
+
+def _pending_consequential_proposal(client):
+    """Create a pending proposal via auto-extraction; return its id."""
+    _use_auto_provider(
+        ExtractionResult(
+            actions=[
+                ProposedAction(
+                    "open_ticket", "consequential", {"title": "Resolve PayPal support"},
+                    source_span="open a ticket about PayPal",
+                )
+            ]
+        )
+    )
+    note = client.post("/events", json=_raw_event("raw_1", "Someone should open a ticket about PayPal."))
+    return note.json()["extraction"]["proposal"]["id"]
+
+
+def test_consequential_proposal_sends_approval_request_email(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    # the agent reaches out (stub) to ask a human to authorize the proposal
+    asks = [
+        e for e in client.get("/events").json()
+        if e["type"] == "email_sent" and e["payload"]["payload"].get("proposal_id") == proposal_id
+    ]
+    assert len(asks) == 1
+
+
+def test_email_reply_approves_pending_proposal(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    # the human replies; the resolver approves that specific proposal
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "approve", "yes, go ahead")]),
+    )
+    reply = client.post("/events", json=_email_reply("raw_2", "Yes, go ahead and open the ticket."))
+
+    approvals = reply.json()["approvals"]
+    assert len(approvals["approved"]) == 1
+    assert approvals["approved"][0]["payload"]["approves"] == proposal_id
+
+    # the consequential action executed (stub) and the proposal is resolved
+    assert any(e["type"] == "ticket_opened" for e in client.get("/events").json())
+    assert client.get("/proposals").json() == []
+    assert client.get("/state").json()["actions"][0]["type"] == "open_ticket"
+
+
+def test_email_reply_defer_leaves_proposal_pending(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    # a reply that addresses nothing -> no resolutions, nothing approved
+    _use_auto_provider(ExtractionResult(), ApprovalResult([]))
+    reply = client.post("/events", json=_email_reply("raw_2", "Thanks for the update!"))
+
+    approvals = reply.json()["approvals"]
+    assert approvals["approved"] == []
+    assert approvals["rejected"] == []
+    assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
+    assert client.get("/state").json()["actions"] == []
+
+
+def test_email_reply_rejects_pending_proposal(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "reject", "no, hold off")]),
+    )
+    reply = client.post("/events", json=_email_reply("raw_2", "No, don't open that ticket."))
+
+    approvals = reply.json()["approvals"]
+    assert len(approvals["rejected"]) == 1
+    # taken out of the pending set, state never changed, no outbound action
+    assert client.get("/proposals").json() == []
+    assert client.get("/state").json()["actions"] == []
+    assert any(e["type"] == "proposal_rejected" for e in client.get("/events").json())
+    assert not any(e["type"] == "ticket_opened" for e in client.get("/events").json())
+
+
+def test_email_reply_with_no_pending_proposals_is_noop(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    _use_auto_provider(ExtractionResult())  # nothing pending, nothing extracted
+    reply = client.post("/events", json=_email_reply("raw_1", "Just an FYI, no action needed."))
+    assert reply.json()["approvals"] is None
+
+
+def test_email_approval_off_requires_explicit_approve(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+
+    monkeypatch.setenv("AIPM_EMAIL_APPROVAL", "0")
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "approve")]),
+    )
+    reply = client.post("/events", json=_email_reply("raw_2", "Yes, go ahead."))
+
+    assert reply.json()["approvals"] is None
+    assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]

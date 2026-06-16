@@ -49,6 +49,7 @@ from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
 
+from aipm.approval import PendingProposal, build_approval_prompt
 from aipm.conflicts import detect_conflicts
 from aipm.entities import outbound_event_type
 from aipm.events import RAW_INPUT_TYPES, Event
@@ -84,6 +85,138 @@ def _write_outbound_event(action: dict, source: str, source_event_id: str) -> di
     return asdict(event)
 
 
+def _summarize_proposal_payload(payload: dict) -> str:
+    """A short, human-readable description of what a proposal would do.
+
+    Used both in the approval-request email the agent sends and as context the
+    resolver sees when mapping a reply onto pending proposals.
+    """
+    parts: list[str] = []
+    for action in payload.get("actions", []):
+        ap = action.get("payload", {})
+        label = ap.get("title") or ap.get("subject") or ap.get("reason") or action.get("type")
+        parts.append(f"{action.get('type')} ({label})")
+    for delta in payload.get("deltas", []):
+        parts.append(f"{delta.get('op')} {delta.get('entity_type')} '{delta.get('entity_id')}'")
+    return "; ".join(parts) if parts else "(empty proposal)"
+
+
+def _pending_proposals(events: list[Event]) -> list[Event]:
+    """Proposals that are neither approved nor rejected yet."""
+    resolved = {
+        e.payload.get("approves") for e in events if e.type == "human_approval"
+    } | {
+        e.payload.get("rejects") for e in events if e.type == "proposal_rejected"
+    }
+    return [e for e in events if e.type == "agent_proposal" and e.id not in resolved]
+
+
+def _approval_recipient(events: list[Event], payload: dict) -> str:
+    """Who to ask for sign-off: an action's named owner, else the project team."""
+    for action in payload.get("actions", []):
+        to = action.get("payload", {}).get("to")
+        if to:
+            return to
+    team = project(events).meta.get("team") or []
+    return ", ".join(team) if team else "team"
+
+
+def _ask_for_approval(proposal: Event, events: list[Event]) -> dict:
+    """Send (stub) an email asking a human to authorize a pending proposal."""
+    summary = _summarize_proposal_payload(proposal.payload)
+    action = {
+        "type": "send_email",
+        "category": "info_request",
+        "payload": {
+            "to": _approval_recipient(events, proposal.payload),
+            "subject": f"Approval needed: {summary}",
+            "body": (
+                f"I'd like to proceed with: {summary}. "
+                f"Reply to this email to approve or decline."
+            ),
+            "proposal_id": proposal.id,
+        },
+    }
+    return _write_outbound_event(action, source="agent:approval-request", source_event_id=proposal.id)
+
+
+def _apply_approval(proposal: Event, events: list[Event], source: str) -> Event:
+    """Write a human_approval that applies a proposal's deltas/actions to state,
+    then execute (stub) its consequential actions. Shared by the explicit
+    approve endpoint and the email-reply approval path."""
+    approval = Event(
+        id=f"appr_{uuid.uuid4().hex[:12]}",
+        type="human_approval",
+        timestamp=_now(),
+        source=source,
+        payload={
+            "deltas": proposal.payload.get("deltas", []),
+            "actions": proposal.payload.get("actions", []),
+            "approves": proposal.id,
+        },
+    )
+
+    state = project(events)
+    apply_event(state, approval)  # raises ProjectionError on a bad payload
+    storage.write_event(approval)
+
+    for action in approval.payload["actions"]:
+        _write_outbound_event(action, source="agent:approved", source_event_id=approval.id)
+    return approval
+
+
+def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
+    """Record that a human declined a proposal -- takes it out of the pending set."""
+    event = Event(
+        id=f"rej_{uuid.uuid4().hex[:12]}",
+        type="proposal_rejected",
+        timestamp=_now(),
+        source=source,
+        payload={"rejects": proposal.id, "reason": reason},
+    )
+    storage.write_event(event)
+    return event
+
+
+def _resolve_approvals_from_reply(
+    reply: Event, provider: ExtractionProvider
+) -> dict | None:
+    """Map a human's email reply onto pending proposals and act on it.
+
+    Runs only when proposals are actually pending. The resolver distinguishes a
+    real authorization ("yes, open the ticket") from merely answering a question
+    ("yes, we need PayPal"), so a stray "yes" never fires an action.
+    """
+    pending = _pending_proposals(storage.read_events())
+    if not pending:
+        return None
+
+    prompt = build_approval_prompt(
+        reply.raw_text,
+        [PendingProposal(id=p.id, summary=_summarize_proposal_payload(p.payload)) for p in pending],
+    )
+    result = provider.resolve_approvals(prompt)
+
+    by_id = {p.id: p for p in pending}
+    approved, rejected = [], []
+    for res in result.resolutions:
+        target = by_id.get(res.proposal_id)
+        if target is None:
+            continue
+        if res.decision == "approve":
+            approval = _apply_approval(target, storage.read_events(), source=f"email:{reply.source}")
+            approved.append(asdict(approval))
+        elif res.decision == "reject":
+            rejection = _reject_proposal(target, source=f"email:{reply.source}", reason=res.reason_span)
+            rejected.append(asdict(rejection))
+
+    return {
+        "approved": approved,
+        "rejected": rejected,
+        "resolutions": result.to_dict()["resolutions"],
+    }
+
+
 def _run_extraction(source: Event, events: list[Event], provider: ExtractionProvider) -> dict:
     """Extract from one raw event: write a proposal for anything needing
     approval, auto-execute info_request actions, and surface conflicts.
@@ -114,6 +247,7 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
     payload["provider"] = provider.name
 
     proposal = None
+    approval_request = None
     if payload["deltas"] or payload["actions"]:
         proposal_event = Event(
             id=f"prop_{uuid.uuid4().hex[:12]}",
@@ -124,13 +258,22 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
         )
         storage.write_event(proposal_event)
         proposal = asdict(proposal_event)
+        # The agent reaches out (stub) to ask a human to authorize the proposal;
+        # that person approves by replying -- see the email-reply approval path.
+        approval_request = _ask_for_approval(proposal_event, storage.read_events())
 
     executed = [
         _write_outbound_event(action, source=f"agent:{provider.name}", source_event_id=source.id)
         for action in auto_actions
     ]
 
-    return {"proposal": proposal, "dropped": dropped, "executed": executed, "conflicts": conflicts}
+    return {
+        "proposal": proposal,
+        "approval_request": approval_request,
+        "dropped": dropped,
+        "executed": executed,
+        "conflicts": conflicts,
+    }
 
 
 @app.post("/project", status_code=201)
@@ -173,6 +316,22 @@ def create_event(
 
     storage.write_event(new_event)
 
+    # Email-reply approval: an inbound reply is the channel a human approves in.
+    # If proposals are pending, resolve the reply against them first (so any
+    # approved facts are already applied before we extract new facts from the
+    # same reply). Degrades gracefully -- no provider or a failure just skips it.
+    approvals = None
+    if (
+        config.email_approval()
+        and new_event.type == "email_reply_received"
+        and new_event.raw_text
+        and provider is not None
+    ):
+        try:
+            approvals = _resolve_approvals_from_reply(new_event, provider)
+        except Exception as exc:  # provider/network failure -- don't fail the append
+            approvals = {"error": f"approval resolution failed: {exc}"}
+
     # Auto-extraction: when a raw-input event lands, run extraction in the same
     # request so the system advances on its own. Degrades gracefully -- if no
     # provider is configured, or the provider fails, the event is still
@@ -191,7 +350,7 @@ def create_event(
             except Exception as exc:  # provider/network failure -- don't fail the append
                 extraction = {"error": f"auto-extraction failed: {exc}"}
 
-    return {**asdict(new_event), "extraction": extraction}
+    return {**asdict(new_event), "approvals": approvals, "extraction": extraction}
 
 
 @app.get("/events")
@@ -272,22 +431,14 @@ def review_state_endpoint() -> dict:
         )
         storage.write_event(proposal_event)
         proposal = asdict(proposal_event)
+        _ask_for_approval(proposal_event, storage.read_events())
 
     return {"issues": issues, "executed": executed, "proposal": proposal}
 
 
 @app.get("/proposals")
 def list_proposals() -> list[dict]:
-    events = storage.read_events()
-    approved = {
-        e.payload.get("approves") for e in events if e.type == "human_approval"
-    }
-    pending = [
-        asdict(e)
-        for e in events
-        if e.type == "agent_proposal" and e.id not in approved
-    ]
-    return pending
+    return [asdict(e) for e in _pending_proposals(storage.read_events())]
 
 
 @app.post("/proposals/{proposal_id}/approve", status_code=201)
@@ -300,30 +451,9 @@ def approve_proposal(proposal_id: str) -> dict:
     if proposal is None:
         raise HTTPException(status_code=404, detail=f"proposal {proposal_id!r} not found")
 
-    approval = Event(
-        id=f"appr_{uuid.uuid4().hex[:12]}",
-        type="human_approval",
-        timestamp=_now(),
-        source="approval",
-        payload={
-            "deltas": proposal.payload.get("deltas", []),
-            "actions": proposal.payload.get("actions", []),
-            "approves": proposal_id,
-        },
-    )
-
-    state = project(events)
     try:
-        apply_event(state, approval)
+        approval = _apply_approval(proposal, events, source="approval")
     except ProjectionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    storage.write_event(approval)
-
-    # Approved actions are all `consequential` (info_request actions already
-    # executed at /extract time) -- now that a human signed off, execute
-    # (stub) them and log the outbound event.
-    for action in approval.payload["actions"]:
-        _write_outbound_event(action, source="agent:approved", source_event_id=approval.id)
 
     return asdict(approval)

@@ -22,7 +22,12 @@ from pathlib import Path
 #   review. Logged for provenance; has no effect on the projection.
 # human_approval: the only event type whose payload (`deltas`, `actions`)
 #   affects the projection -- the single gate where proposed facts/actions
-#   become state.
+#   become state. It can be minted two ways: a direct approval (CLI/dev), or
+#   resolved from a human's email reply to an approval-request (see approval.py).
+# proposal_rejected: records that a human declined a pending proposal (payload
+#   carries `rejects` = the proposal id, and an optional `reason`). Like
+#   agent_proposal it has no effect on the projection; it just takes the
+#   proposal out of the pending set.
 # email_sent, reminder_sent, ticket_opened, flag_raised,
 #   report_to_management: outbound events -- a record of the agent acting
 #   on the world (execution is a stub in Phase 1; these just log what would
@@ -38,6 +43,7 @@ EVENT_TYPES = {
     "manual_note",
     "agent_proposal",
     "human_approval",
+    "proposal_rejected",
     "email_sent",
     "reminder_sent",
     "ticket_opened",

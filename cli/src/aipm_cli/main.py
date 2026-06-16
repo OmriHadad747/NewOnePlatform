@@ -6,7 +6,10 @@ Setup:
 Input (mint a raw-input event; with auto-extraction on, the agent extracts,
 proposes, and auto-sends info_request emails in the same step):
   note <text>              -- append a manual_note event
-  email-in <text>          -- append an email_reply_received event (--from)
+  email-in <text>          -- append an email_reply_received event (--from). If
+                              proposals are pending, the reply is also read as
+                              an approval: "yes, go ahead" authorizes them, so
+                              approving happens in the channel, no approve needed
   transcript <text>        -- append a transcript_ingested event
   append <event.json>      -- POST a hand-written event JSON to the backend
 
@@ -19,9 +22,10 @@ Inspect / drive the loop:
                                info_request emails (logged, not really sent),
                                and surfaces conflict warnings
   proposals                 -- proposals awaiting approval
-  approve <proposal_id>     -- approve a proposal (applies it to state; any
-                               consequential action then "executes" as a
-                               [SIMULATED] outbound event)
+  approve <proposal_id>     -- (dev fallback) approve a proposal directly;
+                               normally you approve by replying via email-in.
+                               Applies it to state; any consequential action
+                               then "executes" as a [SIMULATED] outbound event
   replay <scenario.yaml>   -- post a scenario's events in order and check its
                                checkpoints against the live backend
   review                    -- scan current state for issues and emit follow-up
@@ -136,10 +140,45 @@ def render_extract(body: dict) -> str:
         for problem in dropped:
             lines.append(f"  x {problem}")
 
+    request = body.get("approval_request")
+    if request:
+        inner = request.get("payload", {}).get("payload", {})
+        lines.append("")
+        lines.append("Approval request sent (info_request -- the agent is asking a human):")
+        lines.append(f"  >> [SIMULATED] email_sent → {inner.get('to', '?')}: {inner.get('subject', '')}")
+
     if proposal:
         lines.append("")
-        lines.append(f"Next: aipm approve {proposal['id']}")
+        lines.append(f"Next: reply by email to approve, e.g.  aipm email-in \"yes, go ahead\"")
+        lines.append(f"      (or, for dev:  aipm approve {proposal['id']})")
 
+    return "\n".join(lines)
+
+
+def render_email_approvals(approvals: dict) -> str:
+    """Human-readable view of how an inbound reply resolved pending proposals."""
+    if approvals.get("error"):
+        return f"Approval resolution did not run: {approvals['error']}"
+
+    approved = approvals.get("approved", [])
+    rejected = approvals.get("rejected", [])
+    if not approved and not rejected:
+        return "Approval check: your reply did not authorize any pending request."
+
+    lines = ["Approval resolved from your reply", "================================="]
+    for appr in approved:
+        payload = appr.get("payload", {})
+        lines.append(f"  ✓ Approved {payload.get('approves', '?')}")
+        for d in payload.get("deltas", []):
+            mark = "+" if d["op"] == "create" else "~"
+            lines.append(f"      {mark} {d['op']} {d['entity_type']} {d['entity_id']!r}")
+        for a in payload.get("actions", []):
+            lines.append(f"      >> [SIMULATED] {a['type']}: {_fields(a.get('payload', {}))}")
+    for rej in rejected:
+        payload = rej.get("payload", {})
+        reason = payload.get("reason")
+        suffix = f" ({reason})" if reason else ""
+        lines.append(f"  ✗ Rejected {payload.get('rejects', '?')}{suffix}")
     return "\n".join(lines)
 
 
@@ -347,6 +386,13 @@ def cmd_add_raw(client: httpx.Client, event_type: str, text: str, source: str, a
         return 0
 
     print(f"Added {event_type} [{event['id']}]")
+
+    # An email reply may resolve pending approval requests -- show that first.
+    approvals = body.get("approvals")
+    if approvals:
+        print()
+        print(render_email_approvals(approvals))
+
     extraction = body.get("extraction")
     if not extraction:
         # auto-extraction disabled -- drive it manually

@@ -13,10 +13,13 @@ touching any network code.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from aipm.extraction.prompt import ExtractionPrompt
 from aipm.extraction.types import ExtractionResult
+
+if TYPE_CHECKING:  # avoid a cycle: aipm.approval imports aipm.extraction.prompt
+    from aipm.approval import ApprovalResult
 
 
 @runtime_checkable
@@ -24,6 +27,10 @@ class ExtractionProvider(Protocol):
     name: str
 
     def extract(self, prompt: ExtractionPrompt) -> ExtractionResult: ...
+
+    def resolve_approvals(self, prompt: ExtractionPrompt) -> "ApprovalResult":
+        """Map a human's reply onto pending proposals (approve/reject/defer)."""
+        ...
 
 
 @dataclass(frozen=True)

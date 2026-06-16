@@ -31,6 +31,17 @@ def auto_extract() -> bool:
     return os.environ.get("AIPM_AUTO_EXTRACT", "1").strip().lower() not in {"0", "false", "no", ""}
 
 
+def email_approval() -> bool:
+    """Whether an inbound email reply can approve/reject pending proposals.
+
+    On by default so approvals flow through the same channel as everything else
+    (email today; Slack/Teams later) -- a human replies and the agent resolves
+    the pending request from that reply, no separate approve command needed.
+    Set AIPM_EMAIL_APPROVAL=0 to require explicit POST /proposals/{id}/approve.
+    """
+    return os.environ.get("AIPM_EMAIL_APPROVAL", "1").strip().lower() not in {"0", "false", "no", ""}
+
+
 def gemini_api_key() -> str | None:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 

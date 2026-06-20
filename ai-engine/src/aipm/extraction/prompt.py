@@ -48,6 +48,9 @@ Rules:
   its own, with type `send_message` -- and ALWAYS include `to`, `subject`, and
   `body` in its payload. Use category `consequential` for things that need human
   sign-off, with type `open_ticket`, `raise_flag`, or `escalate_to_management`.
+  A `raise_flag` or `escalate_to_management` payload MUST include `entity_id`
+  (the id of the entity it concerns) and `reason`; an `open_ticket` payload MUST
+  include `task_id` and `title`.
 
 Output STRICT JSON, no prose, in exactly this shape:
 {

@@ -29,19 +29,61 @@ def _strip_json_fence(text: str) -> str:
     return text
 
 
+def _first_json_object(text: str) -> str:
+    """Return the first balanced {...} object in `text` (braces, string-aware).
+
+    Models occasionally wrap the JSON in prose or append a trailing note, which
+    makes a plain `json.loads` of the whole reply fail with "Extra data". We
+    scan for the first complete top-level object instead.
+    """
+    start = text.find("{")
+    if start == -1:
+        raise ValueError("no JSON object found in model reply")
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise ValueError("no balanced JSON object found in model reply")
+
+
+def _loads_lenient(text: str) -> dict:
+    """Parse a model's JSON reply, tolerating fences and surrounding prose."""
+    stripped = _strip_json_fence(text)
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        return json.loads(_first_json_object(stripped))
+
+
 def parse_extraction_json(text: str) -> ExtractionResult:
     """Parse a model's JSON reply into an ExtractionResult."""
-    return ExtractionResult.from_dict(json.loads(_strip_json_fence(text)))
+    return ExtractionResult.from_dict(_loads_lenient(text))
 
 
 def parse_approval_json(text: str) -> ApprovalResult:
     """Parse a model's JSON reply into an ApprovalResult."""
-    return ApprovalResult.from_dict(json.loads(_strip_json_fence(text)))
+    return ApprovalResult.from_dict(_loads_lenient(text))
 
 
 def parse_message_json(text: str) -> ComposedMessage:
     """Parse a model's JSON reply into a ComposedMessage."""
-    return ComposedMessage.from_dict(json.loads(_strip_json_fence(text)))
+    return ComposedMessage.from_dict(_loads_lenient(text))
 
 
 class GeminiProvider:

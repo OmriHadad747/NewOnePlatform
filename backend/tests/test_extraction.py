@@ -33,6 +33,30 @@ def test_parse_json_wrapped_in_code_fence():
     assert result.actions == []
 
 
+def test_parse_json_tolerates_trailing_prose():
+    # the model returns a valid object then keeps talking -> must not crash
+    text = (
+        '{"deltas": [{"op": "create", "entity_type": "Risk", "entity_id": "r1",'
+        ' "fields": {}, "source_span": "vendor late"}], "actions": []}\n\n'
+        "I hope this captures the risk you mentioned!"
+    )
+    result = parse_extraction_json(text)
+    assert result.deltas[0].entity_id == "r1"
+
+
+def test_parse_json_tolerates_leading_prose_and_fence():
+    text = 'Sure, here is the JSON:\n```json\n{"deltas": [], "actions": []}\n```\nLet me know!'
+    result = parse_extraction_json(text)
+    assert result.deltas == [] and result.actions == []
+
+
+def test_parse_json_handles_braces_inside_strings():
+    text = '{"deltas": [], "actions": [], "note": "use {curly} carefully"} trailing'
+    # should parse the whole first object, not stop at the inner brace
+    result = parse_extraction_json(text)
+    assert result.deltas == []
+
+
 def test_build_provider_claude_requires_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("AIPM_EXTRACTION_PROVIDER", "claude")

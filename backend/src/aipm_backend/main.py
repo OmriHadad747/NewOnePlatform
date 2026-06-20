@@ -60,6 +60,7 @@ from aipm.extraction import build_prompt, filter_grounded
 from aipm.extraction.providers import ExtractionProvider
 from aipm.projection import ProjectionError, apply_event, project
 from aipm.review import review_state as _review_state
+from aipm.schema import normalize_payload
 
 from aipm_backend import config, storage
 from aipm_backend.channels import get_channel
@@ -611,6 +612,11 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
 
     grounded, dropped = filter_grounded(result, source.raw_text)
     payload = grounded.to_payload(asserted_by=provider.name)
+
+    # Coerce the model's free-form field/payload names to the canonical schema so
+    # the deterministic safety nets (review, conflicts) reliably engage -- the
+    # model is told the canonical names in the prompt, this guarantees them.
+    payload = normalize_payload(payload)
 
     # Deltas we can't reconcile against state become clarification emails to the
     # author, not silent failures -- the rest of the proposal proceeds normally.

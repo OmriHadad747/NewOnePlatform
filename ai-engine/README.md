@@ -77,6 +77,11 @@ keeping this library's "no network surface" contract intact.
   `source_span` from the raw text; `check_grounding()` / `filter_grounded()`
   verify that in plain Python (no model) and drop anything ungrounded. This is
   what stops the model from inventing facts.
+- **schema** -- the canonical field vocabulary. `fields_vocabulary()` is injected
+  into the prompt so the model emits canonical names (`due_date`, `owner`,
+  `from_entity_id`/`to_entity_id`, ...); `normalize_payload()` then deterministically
+  coerces known aliases before a proposal is built. This is what makes the
+  review/conflict rules reliably engage on free-form model output.
 - **providers** -- the `ExtractionProvider` protocol plus the routing seam: a
   `CATALOG` of provider descriptors and a pure `select_provider()` policy
   ("which provider should the agent use?"). Today it's "cheapest available";

@@ -83,7 +83,11 @@ aipm state | events | proposals | review
   mismatch. Run pytest from inside each package.
 - **Never commit secrets.** API keys go in the environment only — never in a
   tracked file.
-- **Known limitation:** deterministic checks (review, conflicts) look for
-  canonical field names (`due_date`, `status`, `owner`, `severity`), but the
-  LLM picks field names freely (e.g. `date`). Constrain the extraction
-  vocabulary before relying on those safety-net rules.
+- **Canonical field vocabulary.** Deterministic checks (review, conflicts) key
+  off canonical field names (`due_date`, `status`, `owner`, `severity`,
+  `from_entity_id`/`to_entity_id`). The model is told these names in the prompt
+  (`aipm.schema.fields_vocabulary`), AND `aipm.schema.normalize_payload` coerces
+  known aliases (`date`/`target_date`→`due_date`, `dependent`/`blocker`→
+  `from_entity_id`/`to_entity_id`, …) before a proposal is built. Add new
+  aliases to `aipm/schema.py` — that's the single place that guarantees the
+  safety nets engage. Unknown field names pass through untouched.

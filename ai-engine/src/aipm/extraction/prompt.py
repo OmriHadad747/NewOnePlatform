@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from aipm.entities import ACTION_CATEGORIES, ACTION_TYPE_OUTBOUND_EVENTS, ENTITY_TYPES
+from aipm.schema import fields_vocabulary
 from aipm.state import ProjectState
 
 # The stable, cacheable instruction block. Keep this deterministic -- any
@@ -33,12 +34,19 @@ Rules:
 - Use `create` for a new entity, `update` to change an existing one (look at
   the current state to tell which, and to reuse existing entity ids).
 - Keep entity ids short, lowercase, hyphenated, and stable across events.
-- Write dates as ISO YYYY-MM-DD. If a date is missing its year, resolve it to
-  the soonest occurrence on/after TODAY (given in the variable section below).
+- Model each concrete piece of work as a `Task` with a single `owner`. Reuse the
+  same task id across events. Do NOT model work only as `Owner` entities.
+- Use ONLY the canonical field names listed for each entity type below; do not
+  invent field names. Put any extra detail in a `notes` field.
+- A `Dependency` links two task ids: `from_entity_id` is the task that is
+  blocked, `to_entity_id` is the task it waits for. Reference TASK ids, not
+  owner ids.
+- Write dates as `due_date` in ISO YYYY-MM-DD. If a date is missing its year,
+  resolve it to the soonest occurrence on/after TODAY (given below).
 - Propose an action only when the text implies the agent should DO something.
   Use category `info_request` for routine info-gathering the agent can send on
-  its own, with type `send_message` (e.g. messaging a teammate for an update or
-  a transcript). Use category `consequential` for things that need human
+  its own, with type `send_message` -- and ALWAYS include `to`, `subject`, and
+  `body` in its payload. Use category `consequential` for things that need human
   sign-off, with type `open_ticket`, `raise_flag`, or `escalate_to_management`.
 
 Output STRICT JSON, no prose, in exactly this shape:
@@ -83,7 +91,9 @@ def _vocabulary() -> str:
     return (
         f"Entity types: {entity_types}.\n"
         f"Action categories: {categories}.\n"
-        f"Action types: {action_types}."
+        f"Action types: {action_types}.\n"
+        f"Canonical fields per entity type (use these names exactly):\n"
+        f"{fields_vocabulary()}"
     )
 
 

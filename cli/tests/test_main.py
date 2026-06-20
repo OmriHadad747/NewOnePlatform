@@ -198,14 +198,14 @@ def test_cmd_add_raw_posts_event_with_generated_id(capsys):
         seen["body"] = json.loads(request.content)
         return httpx.Response(201, json={"id": seen["body"]["id"]})
 
-    assert cmd_add_raw(_client(handler), "email_reply_received", "Vendor is late", "vendor@x.com") == 0
+    assert cmd_add_raw(_client(handler), "message_received", "Vendor is late", "vendor@x.com") == 0
     assert seen["path"] == "/events"
-    assert seen["body"]["type"] == "email_reply_received"
+    assert seen["body"]["type"] == "message_received"
     assert seen["body"]["raw_text"] == "Vendor is late"
     assert seen["body"]["source"] == "vendor@x.com"
     assert seen["body"]["id"].startswith("raw_")
     out = capsys.readouterr().out
-    assert "email_reply_received" in out
+    assert "message_received" in out
     assert "aipm extract" in out  # nudges the next step
 
 
@@ -233,9 +233,9 @@ def test_cmd_add_raw_renders_inline_extraction(capsys):
         body = json.loads(request.content)
         return httpx.Response(201, json={"id": body["id"], "extraction": extraction})
 
-    assert cmd_add_raw(_client(handler), "email_reply_received", "Vendor is late", "v@x.com") == 0
+    assert cmd_add_raw(_client(handler), "message_received", "Vendor is late", "v@x.com") == 0
     out = capsys.readouterr().out
-    assert "Added email_reply_received" in out
+    assert "Added message_received" in out
     assert "prop_1" in out
     assert "vendor-delay" in out
 
@@ -275,8 +275,8 @@ def test_render_extract_shows_simulated_outbound_and_conflicts():
             },
         },
         "executed": [
-            {"id": "out_1", "type": "email_sent",
-             "payload": {"type": "send_email", "category": "info_request",
+            {"id": "out_1", "type": "message_sent",
+             "payload": {"type": "send_message", "category": "info_request",
                          "payload": {"to": "bob", "subject": "Status?"}}},
         ],
         "conflicts": [
@@ -287,7 +287,7 @@ def test_render_extract_shows_simulated_outbound_and_conflicts():
     }
     out = render_extract(body)
     assert "prop_1" in out
-    assert "[SIMULATED] email_sent" in out
+    assert "[SIMULATED] message_sent" in out
     assert "to=bob" in out
     assert "deadline_regression on sprint-end" in out
     assert "ungrounded" in out
@@ -303,13 +303,13 @@ def test_render_extract_no_proposal():
 
 def test_render_events_flags_outbound_as_simulated():
     events = [
-        {"id": "raw_1", "type": "email_reply_received", "source": "vendor",
+        {"id": "raw_1", "type": "message_received", "source": "vendor",
          "raw_text": "The vendor API is delayed.", "payload": {}},
-        {"id": "out_1", "type": "email_sent", "source": "agent:claude",
-         "payload": {"type": "send_email", "payload": {"to": "bob"}}},
+        {"id": "out_1", "type": "message_sent", "source": "agent:claude",
+         "payload": {"type": "send_message", "payload": {"to": "bob"}}},
     ]
     out = render_events(events)
-    assert "email_reply_received" in out
+    assert "message_received" in out
     assert "[SIMULATED]" in out
     assert "to=bob" in out
     assert '"The vendor API is delayed."' in out
@@ -414,9 +414,9 @@ def test_render_review_with_info_request_auto_executed():
              "entity_id": "deploy", "detail": "Task 'deploy' is blocked"},
         ],
         "executed": [
-            {"id": "out_1", "type": "email_sent",
+            {"id": "out_1", "type": "message_sent",
              "payload": {"payload": {"to": "alice", "subject": "Follow-up?"}}},
-            {"id": "out_2", "type": "email_sent",
+            {"id": "out_2", "type": "message_sent",
              "payload": {"payload": {"to": "bob", "subject": "Task blocked"}}},
         ],
         "proposal": None,
@@ -424,7 +424,7 @@ def test_render_review_with_info_request_auto_executed():
     out = render_review(body)
     assert "open_question" in out
     assert "blocked_task" in out
-    assert "[SIMULATED] email_sent" in out
+    assert "[SIMULATED] message_sent" in out
     assert "to=alice" in out
     assert "Auto-sent" in out
 

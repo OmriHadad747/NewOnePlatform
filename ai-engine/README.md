@@ -24,8 +24,8 @@ question testable -- no LLM yet.
 
 Event types:
 
-- `transcript_ingested`, `email_reply_received`, `manual_note` -- raw
-  input: a meeting transcript, an email reply, or a note typed directly
+- `transcript_ingested`, `message_received`, `manual_note` -- raw
+  input: a meeting transcript, a message reply (on any channel), or a note typed directly
   into the platform by a participant. All three are extraction input for
   a later phase; none of them carry deltas and none affect state.
 - `agent_proposal` -- an LLM-proposed set of deltas/actions, awaiting human
@@ -34,7 +34,7 @@ Event types:
   This is the single gate where proposed facts/actions become fact: the
   agent never mutates state directly, only an approved `human_approval`
   event does.
-- `email_sent`, `reminder_sent`, `ticket_opened`, `flag_raised`,
+- `message_sent`, `ticket_opened`, `flag_raised`,
   `report_to_management` -- outbound events: a record of the agent acting
   on the world. Execution is a stub in Phase 1, so these just log what
   would be sent/opened/raised, with no effect on the projection. See the
@@ -50,10 +50,10 @@ A `human_approval` payload has two parts, both optional:
   audit trail, and -- in the backend -- executed (stub) and logged as a
   `ticket_opened`/`flag_raised`/`report_to_management` event.
 
-`info_request` actions (`send_email`, `send_reminder`) never go through
+`info_request` actions (`send_message`) never go through
 `human_approval`: the agent sends these routine info-gathering messages on
-its own as soon as they're proposed, logging an `email_sent`/
-`reminder_sent` event immediately. `aipm.entities.outbound_event_type()`
+its own as soon as they're proposed, logging a `message_sent` event
+immediately. `aipm.entities.outbound_event_type()`
 maps an action's `type` to its outbound event type; this routing (and the
 auto vs. gated split) is applied by the backend's `/extract` and
 `/proposals/{id}/approve` endpoints -- see `backend/README.md`.

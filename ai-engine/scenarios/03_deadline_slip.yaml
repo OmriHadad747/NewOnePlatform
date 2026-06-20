@@ -33,7 +33,7 @@ events:
           provenance: {asserted_by: PM, source_span: "Let's target Feb 1 for the auth service"}
 
   - id: evt_003
-    type: email_reply_received
+    type: message_received
     timestamp: "2025-01-20T14:00:00Z"
     source: email_alice_2025-01-20
     raw_text: >

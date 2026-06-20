@@ -16,11 +16,11 @@ from aipm.state import ProjectState
 # state -- the single gate where proposed facts/actions become fact.
 # `project_initialized` is handled separately (it sets project metadata, not
 # entities/actions). All other event types (transcript_ingested,
-# email_reply_received, manual_note, agent_proposal, and the outbound event
-# types -- email_sent, reminder_sent, ticket_opened, flag_raised,
-# report_to_management) are logged as-is and have no effect on the projection:
-# raw input becomes extraction input, and outbound events are just an audit
-# trail of what the agent sent/opened/raised.
+# message_received, manual_note, agent_proposal, and the outbound event
+# types -- message_sent, ticket_opened, flag_raised, report_to_management) are
+# logged as-is and have no effect on the projection: raw input becomes
+# extraction input, and outbound events are just an audit trail of what the
+# agent sent/opened/raised.
 STATE_CHANGING_EVENT_TYPES = {"human_approval"}
 
 DELTA_OPS = {"create", "update"}

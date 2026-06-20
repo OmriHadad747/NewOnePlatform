@@ -16,8 +16,16 @@ safely and fast — it does not repeat the READMEs.
   Everything else (raw input, outbound events, `proposal_rejected`) is audit
   trail with no projection effect.
 - **Approval flows through the channel, not a command.** A human approves by
-  replying via email (`email-in`) — the model resolves the reply against
+  replying with a message (`message-in`) — the model resolves the reply against
   pending proposals (`aipm.approval`). `aipm approve` is a dev-only fallback.
+- **Messages, threads, channels.** Every agent↔human contact is a `message_sent`
+  / `message_received` on a `thread_id`, over a `channel` (email/Slack/…; only
+  the `stub` channel ships today, behind the `Channel` seam in
+  `backend/channels.py`). A reply that arrives *on a thread* is resolved against
+  that thread's proposal only — and is never re-mined for new actions. When a
+  threaded reply is ambiguous, the agent may compose ONE short reply itself
+  (`aipm.conversation`, info_request only, capped per thread) before falling
+  back to the nudge/escalation ladder. See [`DESIGN.md`](DESIGN.md).
 
 ## Layout (one line each; see each dir's README)
 
@@ -42,7 +50,7 @@ uvicorn aipm_backend.main:app --reload      # needs an API key for live extracti
 
 # drive it
 aipm init "Project" --start 2026-06-01 --end 2026-11-28 --team alice bob
-aipm transcript "..."   # or: note / email-in --from x@y.com
+aipm transcript "..."   # or: note / message-in --from x@y.com [--channel ... --thread ...]
 aipm state | events | proposals | review
 ```
 
@@ -62,7 +70,10 @@ aipm state | events | proposals | review
 | `AIPM_EXTRACTION_PROVIDER` | cheapest (`gemini`) | `claude` or `gemini` |
 | `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | — | provider keys |
 | `AIPM_AUTO_EXTRACT` | `1` | extract inline when a raw event lands |
-| `AIPM_EMAIL_APPROVAL` | `1` | let an email reply approve pending proposals |
+| `AIPM_MESSAGE_APPROVAL` | `1` | let a message reply approve pending proposals (old `AIPM_EMAIL_APPROVAL` still read as fallback) |
+| `AIPM_CHANNEL` | `stub` | outbound channel adapter (only `stub` ships today) |
+| `AIPM_MODEL_MESSAGES` | `1` | let the agent compose its own short in-thread replies (info_request only) |
+| `AIPM_MAX_THREAD_TURNS` | `3` | cap on model-composed replies per thread before falling back to escalation |
 
 ## Gotchas
 

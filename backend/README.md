@@ -30,8 +30,8 @@ This is the only thing `cli/` (and later `frontend/`) talk to.
 Only `human_approval` events carry a payload that affects `/state` --
 `deltas` (entity creates/updates) and `actions` (`consequential` actions
 that were approved). Other event types (`transcript_ingested`,
-`email_reply_received`, `manual_note`, `agent_proposal`, and the outbound
-types `email_sent`, `reminder_sent`, `ticket_opened`, `flag_raised`,
+`message_received`, `manual_note`, `agent_proposal`, and the outbound
+types `message_sent`, `ticket_opened`, `flag_raised`,
 `report_to_management`) are stored as-is but have no effect on the
 projection.
 
@@ -43,9 +43,9 @@ model mutate state directly:
 - `POST /extract` -- body `{"source_event_id": "<id>"}`. Runs the configured
   provider over a raw-input event's text plus the current state, and drops
   any proposal whose `source_span` isn't grounded in the raw text. Any
-  `info_request` actions (routine info-gathering, e.g. `send_email`,
-  `send_reminder`) execute immediately (stub) and are logged as
-  `email_sent`/`reminder_sent` events -- **no approval needed**. The
+  `info_request` actions (routine info-gathering via `send_message`)
+  execute immediately (stub) and are logged as
+  `message_sent` events -- **no approval needed**. The
   remaining `deltas` and `consequential` actions become a single
   `agent_proposal` event (**no state change**), or no proposal at all if
   nothing is left. Returns `{"proposal": ... | null, "dropped": [...], "executed": [...],

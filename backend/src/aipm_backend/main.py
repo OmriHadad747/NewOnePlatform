@@ -16,16 +16,16 @@ Extraction / approval flow (Step 3):
                                       questions, blocked tasks, unowned high
                                       risks, overdue deadlines) and emit
                                       follow-up actions: info_request ones
-                                      auto-execute (email_sent/reminder_sent);
+                                      auto-execute (message_sent);
                                       consequential ones go into a proposal.
                                       Returns: {issues, executed, proposal}
   POST /extract                    -- run extraction on a raw event, write an
                                       agent_proposal (no state change).
                                       info_request actions execute (stub)
                                       immediately and log an outbound event
-                                      (email_sent/reminder_sent); only
-                                      consequential actions stay in the
-                                      proposal, awaiting approval.
+                                      (message_sent); only consequential
+                                      actions stay in the proposal, awaiting
+                                      approval.
                                       Returns: {proposal, dropped, executed,
                                       conflicts} -- conflicts are semantic
                                       warnings (deadline regression, task done
@@ -53,6 +53,7 @@ from fastapi import Depends, FastAPI, HTTPException
 
 from aipm.approval import PendingProposal, build_approval_prompt
 from aipm.conflicts import detect_conflicts
+from aipm.conversation import build_message_prompt
 from aipm.entities import outbound_event_type
 from aipm.events import RAW_INPUT_TYPES, Event
 from aipm.extraction import build_prompt, filter_grounded
@@ -61,6 +62,7 @@ from aipm.projection import ProjectionError, apply_event, project
 from aipm.review import review_state as _review_state
 
 from aipm_backend import config, storage
+from aipm_backend.channels import get_channel
 from aipm_backend.extraction import get_provider, get_provider_optional
 from aipm_backend.models import EventIn, ExtractRequest, ProjectIn, serialize_state
 
@@ -71,17 +73,44 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _write_outbound_event(action: dict, source: str, source_event_id: str) -> dict:
+def _new_thread_id() -> str:
+    """Mint a conversation id. One thread per outreach; reused for follow-ups."""
+    return f"thr_{uuid.uuid4().hex[:12]}"
+
+
+def _write_outbound_event(
+    action: dict, source: str, source_event_id: str, thread_id: str | None = None
+) -> dict:
     """Record an action's (stubbed) execution as an outbound event.
 
+    Communications (those that resolve to `message_sent`) are delivered through
+    the configured `Channel` and stamped with `channel`, `thread_id`, and the
+    channel-side `message_id`, so the conversation can be reconstructed by
+    `thread_id`. World-effects (ticket/flag/escalation) are logged as-is.
     Returns the written event as a dict.
     """
+    out_type = outbound_event_type(action["type"], action["category"])
+    payload = {**action, "source_event_id": source_event_id}
+
+    if out_type == "message_sent":
+        inner = dict(action.get("payload", {}))
+        tid = thread_id or inner.get("thread_id") or _new_thread_id()
+        channel = get_channel()
+        message_id = channel.send(
+            thread_id=tid,
+            recipient=inner.get("to"),
+            text=inner.get("body", ""),
+            subject=inner.get("subject"),
+        )
+        inner.update({"channel": channel.name, "thread_id": tid, "message_id": message_id})
+        payload = {**action, "payload": inner, "source_event_id": source_event_id}
+
     event = Event(
         id=f"out_{uuid.uuid4().hex[:12]}",
-        type=outbound_event_type(action["type"], action["category"]),
+        type=out_type,
         timestamp=_now(),
         source=source,
-        payload={**action, "source_event_id": source_event_id},
+        payload=payload,
     )
     storage.write_event(event)
     return asdict(event)
@@ -132,22 +161,31 @@ def _approval_recipient(events: list[Event], payload: dict) -> str:
 
 
 def _ask_for_approval(proposal: Event, events: list[Event]) -> dict:
-    """Send (stub) an email asking a human to authorize a pending proposal."""
+    """Open a thread (stub) asking a human to authorize a pending proposal.
+
+    The proposal carries a `thread_id`; the request and any later follow-ups or
+    composed replies all ride that same thread, so a reply on it maps straight
+    back to this proposal.
+    """
     summary = _summarize_proposal_payload(proposal.payload)
+    thread_id = proposal.payload.get("thread_id")
     action = {
-        "type": "send_email",
+        "type": "send_message",
         "category": "info_request",
         "payload": {
             "to": _approval_recipient(events, proposal.payload),
             "subject": f"Approval needed: {summary}",
             "body": (
                 f"I'd like to proceed with: {summary}. "
-                f"Reply to this email to approve or decline."
+                f"Reply to approve or decline."
             ),
             "proposal_id": proposal.id,
+            "thread_id": thread_id,
         },
     }
-    return _write_outbound_event(action, source="agent:approval-request", source_event_id=proposal.id)
+    return _write_outbound_event(
+        action, source="agent:approval-request", source_event_id=proposal.id, thread_id=thread_id
+    )
 
 
 def _apply_approval(proposal: Event, events: list[Event], source: str) -> Event:
@@ -228,6 +266,7 @@ def _approve_ticket_batch(batch: Event, source: str) -> dict:
                 "approver": owner,  # the owner has the final say on their ticket(s)
                 "provider": "ticket-planner",
                 "source_event_id": batch.id,
+                "thread_id": _new_thread_id(),  # each owner gets their own thread
             },
         )
         storage.write_event(proposal)
@@ -267,9 +306,9 @@ def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
 
 
 def _has_approval_request(proposal_id: str, events: list[Event]) -> bool:
-    """True if an approval-request email was already sent for this proposal."""
+    """True if an approval-request message was already sent for this proposal."""
     return any(
-        e.type == "email_sent"
+        e.type == "message_sent"
         and e.source == "agent:approval-request"
         and e.payload.get("payload", {}).get("proposal_id") == proposal_id
         for e in events
@@ -283,11 +322,26 @@ _FOLLOWUP_SOURCES = ("agent:approval-nudge", "agent:approval-escalation")
 
 
 def _followup_count(proposal_id: str, events: list[Event]) -> int:
-    """How many follow-up emails (nudge + escalation) were sent for this proposal."""
+    """How many follow-up messages (nudge + escalation) were sent for this proposal."""
     return sum(
         1 for e in events
-        if e.type == "email_sent"
+        if e.type == "message_sent"
         and e.source in _FOLLOWUP_SOURCES
+        and e.payload.get("payload", {}).get("proposal_id") == proposal_id
+    )
+
+
+# Composed-reply source: model-authored, info_request-only messages the agent
+# posts into a thread when a reply is ambiguous (capped per thread).
+_COMPOSE_SOURCE = "agent:compose"
+
+
+def _compose_count(proposal_id: str, events: list[Event]) -> int:
+    """How many model-composed replies the agent has posted on this thread."""
+    return sum(
+        1 for e in events
+        if e.type == "message_sent"
+        and e.source == _COMPOSE_SOURCE
         and e.payload.get("payload", {}).get("proposal_id") == proposal_id
     )
 
@@ -307,22 +361,76 @@ def _send_followup(
     body: str,
     to: str | None = None,
 ) -> dict:
-    """Send (stub) a follow-up email about an unaddressed pending proposal.
+    """Send (stub) a follow-up message about an unaddressed pending proposal.
 
     `to` overrides the default recipient (used for escalations that must go to
     PM/tech lead rather than the original action target).
     """
+    thread_id = proposal.payload.get("thread_id")
     action = {
-        "type": "send_email",
+        "type": "send_message",
         "category": "info_request",
         "payload": {
             "to": to or _approval_recipient(events, proposal.payload),
             "subject": subject,
             "body": body,
             "proposal_id": proposal.id,
+            "thread_id": thread_id,
         },
     }
-    return _write_outbound_event(action, source=source, source_event_id=proposal.id)
+    return _write_outbound_event(
+        action, source=source, source_event_id=proposal.id, thread_id=thread_id
+    )
+
+
+def _thread_history(thread_id: str, events: list[Event]) -> list[dict]:
+    """Reconstruct a thread as a chronological list of {sender, text} messages."""
+    history: list[dict] = []
+    for e in events:
+        if e.type == "message_sent":
+            inner = e.payload.get("payload", {})
+            if inner.get("thread_id") == thread_id:
+                history.append({"sender": "agent", "text": inner.get("body", "")})
+        elif e.type == "message_received":
+            if e.payload.get("thread_id") == thread_id and e.raw_text:
+                history.append({"sender": e.source, "text": e.raw_text})
+    return history
+
+
+def _compose_thread_reply(
+    proposal: Event, reply: Event, provider: ExtractionProvider, events: list[Event]
+) -> dict | None:
+    """Let the model compose ONE short info_request reply in the proposal's thread.
+
+    Returns the written message_sent event dict if the model chose to send, else
+    None (model had nothing useful to add, or the provider failed). Never takes a
+    consequential action -- this is conversation only.
+    """
+    thread_id = proposal.payload.get("thread_id")
+    if not thread_id:
+        return None
+    summary = _summarize_proposal_payload(proposal.payload)
+    prompt = build_message_prompt(summary, _thread_history(thread_id, events))
+    try:
+        composed = provider.compose_message(prompt)
+    except Exception:  # provider/network failure -> fall back to the ladder
+        return None
+    if not composed.send or not composed.text.strip():
+        return None
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": reply.source,
+            "subject": f"Re: {summary[:60]}",
+            "body": composed.text.strip(),
+            "proposal_id": proposal.id,
+            "thread_id": thread_id,
+        },
+    }
+    return _write_outbound_event(
+        action, source=_COMPOSE_SOURCE, source_event_id=reply.id, thread_id=thread_id
+    )
 
 
 def _resolve_approvals_from_reply(
@@ -334,11 +442,22 @@ def _resolve_approvals_from_reply(
     real authorization ("yes, open the ticket") from merely answering a question
     ("yes, we need PayPal"), so a stray "yes" never fires an action.
 
+    A reply may arrive ON a thread (`thread_id` in its payload) -- the channel
+    knows which conversation it belongs to. When it does, we scope resolution to
+    that thread's proposal alone, so the model only judges the one request the
+    person is actually answering (and the reply is never mined for new actions --
+    see the auto-extraction guard in create_event).
+
     Proposals this reply did not address (and that we already asked about) are
-    chased: a nudge on the first miss, an escalation on the second; after that
-    we stop emailing but leave the proposal pending.
+    chased. On a thread, the agent first tries a short model-composed reply (up
+    to the per-thread cap); off a thread, or once the cap is hit, it falls back
+    to the templated ladder: a nudge on the first miss, an escalation on the
+    second, then quiet.
     """
+    thread_id = reply.payload.get("thread_id")
     pending = _pending_proposals(storage.read_events())
+    if thread_id:
+        pending = [p for p in pending if p.payload.get("thread_id") == thread_id]
     if not pending:
         return None
 
@@ -373,17 +492,34 @@ def _resolve_approvals_from_reply(
             resolved_ids.add(res.proposal_id)
         # "defer" leaves the proposal pending -- handled by the chase loop below.
 
-    # Chase the proposals this reply ignored: nudge once, escalate on the
-    # second miss, then go quiet (proposal stays pending, visible in /proposals).
+    # Chase the proposals this reply ignored. On a thread, try a short
+    # model-composed reply first (capped per thread); otherwise fall back to the
+    # templated ladder: nudge once, escalate on the second miss, then go quiet
+    # (proposal stays pending, visible in /proposals).
+    composed: list[dict] = []
     nudged: list[dict] = []
     escalated: list[dict] = []
-    current = storage.read_events()
+    threaded = bool(thread_id)
     for proposal in pending:
         if proposal.id in resolved_ids:
             continue
+        current = storage.read_events()
         if not _has_approval_request(proposal.id, current):
             continue  # never asked about this one yet -- nothing to follow up on
         summary = _summarize_proposal_payload(proposal.payload)
+
+        # In-thread, ambiguous reply: let the model say something short, as long
+        # as we're under the per-thread turn cap. info_request only.
+        if (
+            threaded
+            and config.model_messages()
+            and _compose_count(proposal.id, current) < config.max_thread_turns()
+        ):
+            event = _compose_thread_reply(proposal, reply, provider, current)
+            if event is not None:
+                composed.append({"proposal_id": proposal.id, "summary": summary})
+                continue  # said our piece; ladder waits for the next miss
+
         count = _followup_count(proposal.id, current)
         if count == 0:
             _send_followup(
@@ -415,6 +551,7 @@ def _resolve_approvals_from_reply(
         "approved": approved,
         "rejected": rejected,
         "fanned_out": fanned_out,
+        "composed": composed,
         "nudged": nudged,
         "escalated": escalated,
         "resolutions": result.to_dict()["resolutions"],
@@ -443,9 +580,9 @@ def _unapplicable_deltas(deltas: list[dict], state) -> tuple[list[dict], list[tu
 
 
 def _send_clarification(source: Event, delta: dict, reason: str) -> dict:
-    """Email the author (stub) to ask what they meant by an unreconcilable delta."""
+    """Message the author (stub) to ask what they meant by an unreconcilable delta."""
     action = {
-        "type": "send_email",
+        "type": "send_message",
         "category": "info_request",
         "payload": {
             "to": source.source,
@@ -502,6 +639,7 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
     payload["actions"] = [a for a in payload["actions"] if a["category"] == "consequential"]
     payload["source_event_id"] = source.id
     payload["provider"] = provider.name
+    payload["thread_id"] = _new_thread_id()  # the conversation this proposal owns
 
     # A date past the project end is not just advisory: attach a consequential
     # raise_flag so the PM must explicitly acknowledge the timeline breach when
@@ -611,14 +749,14 @@ def create_event(
 
     storage.write_event(new_event)
 
-    # Email-reply approval: an inbound reply is the channel a human approves in.
-    # If proposals are pending, resolve the reply against them first (so any
+    # Message-reply approval: an inbound reply is the channel a human approves
+    # in. If proposals are pending, resolve the reply against them first (so any
     # approved facts are already applied before we extract new facts from the
     # same reply). Degrades gracefully -- no provider or a failure just skips it.
     approvals = None
     if (
-        config.email_approval()
-        and new_event.type == "email_reply_received"
+        config.message_approval()
+        and new_event.type == "message_received"
         and new_event.raw_text
         and provider is not None
     ):
@@ -626,6 +764,14 @@ def create_event(
             approvals = _resolve_approvals_from_reply(new_event, provider)
         except Exception as exc:  # provider/network failure -- don't fail the append
             approvals = {"error": f"approval resolution failed: {exc}"}
+
+    # A reply that arrives ON a thread is consumed purely as an in-conversation
+    # reply (handled above): it is NOT re-mined for new actions. This is what
+    # keeps an approval ("yes, open it") from re-proposing the very ticket it
+    # just approved -- the duplicate-ticket bug cannot form on a threaded reply.
+    is_threaded_reply = bool(
+        new_event.type == "message_received" and new_event.payload.get("thread_id")
+    )
 
     # Auto-extraction: when a raw-input event lands, run extraction in the same
     # request so the system advances on its own. Degrades gracefully -- if no
@@ -636,6 +782,7 @@ def create_event(
         config.auto_extract()
         and new_event.type in RAW_INPUT_TYPES
         and new_event.raw_text
+        and not is_threaded_reply
     ):
         current_events = storage.read_events()
         if project(current_events).meta.get("status") == "closed":
@@ -728,6 +875,7 @@ def review_state_endpoint() -> dict:
                 "source_event_id": "review-state",
                 "deltas": [],
                 "actions": actions_with_prov,
+                "thread_id": _new_thread_id(),
             },
         )
         storage.write_event(proposal_event)
@@ -831,6 +979,7 @@ def open_tickets() -> dict:
             "actions": actions,
             "provider": "ticket-planner",
             "source_event_id": "open-tickets",
+            "thread_id": _new_thread_id(),
         },
     )
     storage.write_event(proposal)

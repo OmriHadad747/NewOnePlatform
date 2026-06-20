@@ -6,10 +6,13 @@ Setup:
 Input (mint a raw-input event; with auto-extraction on, the agent extracts,
 proposes, and auto-sends info_request emails in the same step):
   note <text>              -- append a manual_note event
-  email-in <text>          -- append an email_reply_received event (--from). If
-                              proposals are pending, the reply is also read as
-                              an approval: "yes, go ahead" authorizes them, so
-                              approving happens in the channel, no approve needed
+  message-in <text>        -- append a message_received event (--from, --channel,
+                              --thread). If proposals are pending, the reply is
+                              also read as an approval: "yes, go ahead" authorizes
+                              them, so approving happens in the channel, no approve
+                              needed. With --thread, it's scoped to that
+                              conversation's proposal (and the agent may reply in
+                              the thread if the message is ambiguous).
   transcript <text>        -- append a transcript_ingested event
   append <event.json>      -- POST a hand-written event JSON to the backend
 
@@ -70,7 +73,7 @@ ENTITY_TABLES = [
 # Outbound event types are records of the agent acting on the world. In
 # Phase 1 execution is a stub, so we flag them [SIMULATED] when rendering.
 OUTBOUND_EVENT_TYPES = {
-    "email_sent", "reminder_sent", "ticket_opened", "flag_raised", "report_to_management",
+    "message_sent", "ticket_opened", "flag_raised", "report_to_management",
 }
 
 
@@ -153,17 +156,17 @@ def render_extract(body: dict) -> str:
         inner = request.get("payload", {}).get("payload", {})
         lines.append("")
         lines.append("Approval request sent (info_request -- the agent is asking a human):")
-        lines.append(f"  >> [SIMULATED] email_sent → {inner.get('to', '?')}: {inner.get('subject', '')}")
+        lines.append(f"  >> [SIMULATED] message_sent → {inner.get('to', '?')}: {inner.get('subject', '')}")
 
     if proposal:
         lines.append("")
-        lines.append(f"Next: reply by email to approve, e.g.  aipm email-in \"yes, go ahead\"")
+        lines.append(f"Next: reply to approve, e.g.  aipm message-in \"yes, go ahead\" --thread {proposal['payload'].get('thread_id', '<thread>')}")
         lines.append(f"      (or, for dev:  aipm approve {proposal['id']})")
 
     return "\n".join(lines)
 
 
-def render_email_approvals(approvals: dict) -> str:
+def render_message_approvals(approvals: dict) -> str:
     """Human-readable view of how an inbound reply resolved pending proposals."""
     if approvals.get("error"):
         return f"Approval resolution did not run: {approvals['error']}"
@@ -171,9 +174,10 @@ def render_email_approvals(approvals: dict) -> str:
     approved = approvals.get("approved", [])
     rejected = approvals.get("rejected", [])
     fanned_out = approvals.get("fanned_out", [])
+    composed = approvals.get("composed", [])
     nudged = approvals.get("nudged", [])
     escalated = approvals.get("escalated", [])
-    if not approved and not rejected and not fanned_out and not nudged and not escalated:
+    if not approved and not rejected and not fanned_out and not composed and not nudged and not escalated:
         return "Approval check: your reply did not authorize any pending request."
 
     lines = ["Approval resolved from your reply", "================================="]
@@ -196,18 +200,23 @@ def render_email_approvals(approvals: dict) -> str:
         lines.append("Batch approved -- now asking each owner to confirm their own ticket:")
         for f in fanned_out:
             tickets = ", ".join(f.get("tickets", []))
-            lines.append(f"  >> [SIMULATED] email_sent → {f['owner']}: confirm '{tickets}'  ({f['proposal_id']})")
+            lines.append(f"  >> [SIMULATED] message_sent → {f['owner']}: confirm '{tickets}'  ({f['proposal_id']})")
 
+    if composed:
+        lines.append("")
+        lines.append("Reply was ambiguous -- the agent replied in the thread (info_request):")
+        for item in composed:
+            lines.append(f"  >> [SIMULATED] message_sent: replied on '{item['summary'][:60]}'")
     if nudged:
         lines.append("")
         lines.append("Reply didn't address these -- sent a reminder (info_request):")
         for item in nudged:
-            lines.append(f"  >> [SIMULATED] email_sent: still waiting on '{item['summary'][:60]}'")
+            lines.append(f"  >> [SIMULATED] message_sent: still waiting on '{item['summary'][:60]}'")
     if escalated:
         lines.append("")
         lines.append("No response after 2 attempts -- escalated (proposal stays pending):")
         for item in escalated:
-            lines.append(f"  >> [SIMULATED] email_sent: escalating '{item['summary'][:60]}'")
+            lines.append(f"  >> [SIMULATED] message_sent: escalating '{item['summary'][:60]}'")
     return "\n".join(lines)
 
 
@@ -364,10 +373,10 @@ def cmd_init(
     name: str,
     description: str | None,
     team: list[str],
-    start_date: str | None,
-    end_date: str | None,
-    pm: str | None,
-    tech_lead: str | None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    pm: str | None = None,
+    tech_lead: str | None = None,
     as_json: bool = False,
 ) -> int:
     """Define the project so later extraction has framing.
@@ -418,12 +427,21 @@ def cmd_init(
     return 0
 
 
-def cmd_add_raw(client: httpx.Client, event_type: str, text: str, source: str, as_json: bool = False) -> int:
+def cmd_add_raw(
+    client: httpx.Client,
+    event_type: str,
+    text: str,
+    source: str,
+    as_json: bool = False,
+    payload: dict | None = None,
+) -> int:
     """Mint a raw-input event from text and POST it.
 
     With auto-extraction on (the backend default), the response carries the
-    extraction result, which we render inline -- so a single `email-in`/`note`/
-    `transcript` shows what the agent extracted, proposed, and auto-sent.
+    extraction result, which we render inline -- so a single `message-in`/`note`/
+    `transcript` shows what the agent extracted, proposed, and auto-sent. A
+    `payload` (e.g. {channel, thread_id} for a message-in) ties the event to its
+    conversation; a reply on a thread is resolved against that thread's proposal.
     """
     event = {
         "id": f"raw_{uuid.uuid4().hex[:8]}",
@@ -431,7 +449,7 @@ def cmd_add_raw(client: httpx.Client, event_type: str, text: str, source: str, a
         "timestamp": _now(),
         "source": source,
         "raw_text": text,
-        "payload": {},
+        "payload": payload or {},
     }
     response = client.post("/events", json=event)
     if response.status_code >= 400:
@@ -443,11 +461,11 @@ def cmd_add_raw(client: httpx.Client, event_type: str, text: str, source: str, a
 
     print(f"Added {event_type} [{event['id']}]")
 
-    # An email reply may resolve pending approval requests -- show that first.
+    # An inbound reply may resolve pending approval requests -- show that first.
     approvals = body.get("approvals")
     if approvals:
         print()
-        print(render_email_approvals(approvals))
+        print(render_message_approvals(approvals))
 
     extraction = body.get("extraction")
     if not extraction:
@@ -535,12 +553,12 @@ def render_open_tickets(body: dict) -> str:
     if request:
         inner = request.get("payload", {}).get("payload", {})
         lines.append("")
-        lines.append("Sent ONE approval email to the PM (not the whole team):")
-        lines.append(f"  >> [SIMULATED] email_sent → {inner.get('to', '?')}: {inner.get('subject', '')}")
+        lines.append("Sent ONE approval message to the PM (not the whole team):")
+        lines.append(f"  >> [SIMULATED] message_sent → {inner.get('to', '?')}: {inner.get('subject', '')}")
     lines.append("")
-    lines.append("Flow: PM approves the batch → each owner gets a final confirm email")
+    lines.append("Flow: PM approves the batch → each owner gets a final confirm message")
     lines.append("      → only the owner's reply opens their ticket.")
-    lines.append(f"Next: PM replies by email, e.g.  aipm email-in \"yes, open them\" --from <pm>")
+    lines.append(f"Next: PM replies, e.g.  aipm message-in \"yes, open them\" --from <pm>")
     return "\n".join(lines)
 
 
@@ -671,9 +689,14 @@ def _build_parser() -> argparse.ArgumentParser:
     note_parser.add_argument("text")
     note_parser.add_argument("--source", default="pm_note")
 
-    email_parser = subparsers.add_parser("email-in", help="append an email_reply_received raw event")
-    email_parser.add_argument("text")
-    email_parser.add_argument("--from", dest="sender", default="email", help="sender (recorded as source)")
+    message_parser = subparsers.add_parser("message-in", help="append a message_received raw event")
+    message_parser.add_argument("text")
+    message_parser.add_argument("--from", dest="sender", default="message", help="sender (recorded as source)")
+    message_parser.add_argument("--channel", default="email", help="channel the message arrived on (email, slack, ...)")
+    message_parser.add_argument(
+        "--thread", dest="thread_id", default=None,
+        help="thread id this message replies on (ties it to that conversation's proposal)",
+    )
 
     transcript_parser = subparsers.add_parser(
         "transcript", help="append a transcript_ingested raw event"
@@ -741,8 +764,13 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "note":
             return cmd_add_raw(client, "manual_note", args.text, args.source, as_json)
-        if args.command == "email-in":
-            return cmd_add_raw(client, "email_reply_received", args.text, args.sender, as_json)
+        if args.command == "message-in":
+            payload: dict = {"channel": args.channel}
+            if args.thread_id:
+                payload["thread_id"] = args.thread_id
+            return cmd_add_raw(
+                client, "message_received", args.text, args.sender, as_json, payload=payload
+            )
         if args.command == "transcript":
             return cmd_add_raw(client, "transcript_ingested", args.text, args.source, as_json)
         if args.command == "append":

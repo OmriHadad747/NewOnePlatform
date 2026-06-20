@@ -16,10 +16,12 @@ from pathlib import Path
 #   extraction); it does not carry entity deltas or actions.
 # project_closed: marks the project as closed. Sets meta["status"]="closed"
 #   in the projection; the backend rejects new extraction on a closed project.
-# transcript_ingested, email_reply_received, manual_note: raw input -- a
-#   transcript, an email reply, or a note typed directly into the platform
-#   by a participant. All three are extraction input; none of them carry
-#   deltas and none affect the projection.
+# transcript_ingested, message_received, manual_note: raw input -- a
+#   transcript, an inbound message (a reply on any channel: email, Slack, ...),
+#   or a note typed directly into the platform by a participant. All three are
+#   extraction input; none of them carry deltas and none affect the projection.
+#   A message_received may carry `channel` and `thread_id` in its payload, tying
+#   it to the conversation (thread) the agent opened.
 # agent_proposal: an LLM-proposed set of deltas/actions, awaiting human
 #   review. Logged for provenance; has no effect on the projection.
 # human_approval: the only event type whose payload (`deltas`, `actions`)
@@ -30,42 +32,41 @@ from pathlib import Path
 #   carries `rejects` = the proposal id, and an optional `reason`). Like
 #   agent_proposal it has no effect on the projection; it just takes the
 #   proposal out of the pending set.
-# email_sent, reminder_sent, ticket_opened, flag_raised,
-#   report_to_management: outbound events -- a record of the agent acting
-#   on the world (execution is a stub in Phase 1; these just log what would
-#   be sent/opened/raised). `email_sent`/`reminder_sent` come from
-#   `info_request` actions, which execute as soon as they're proposed (no
-#   approval needed); the rest come from `consequential` actions, which
-#   execute only once a `human_approval` applies them. None of these affect
-#   the projection -- they're logged for the audit trail, like raw input.
+# message_sent, ticket_opened, flag_raised, report_to_management: outbound
+#   events -- a record of the agent acting on the world (execution is a stub in
+#   Phase 1; these just log what would be sent/opened/raised). `message_sent`
+#   comes from `send_message` (`info_request`) actions, which execute as soon as
+#   they're proposed (no approval needed) -- and from model-composed replies the
+#   agent posts into a thread; the rest come from `consequential` actions, which
+#   execute only once a `human_approval` applies them. A `message_sent` carries
+#   `channel` and `thread_id` so it can be tied to its conversation. None of
+#   these affect the projection -- they're logged for the audit trail.
 EVENT_TYPES = {
     "project_initialized",
     "project_closed",
     "transcript_ingested",
-    "email_reply_received",
+    "message_received",
     "manual_note",
     "agent_proposal",
     "human_approval",
     "proposal_rejected",
-    "email_sent",
-    "reminder_sent",
+    "message_sent",
     "ticket_opened",
     "flag_raised",
     "report_to_management",
 }
 
 # Raw-input event types: text added to the log by a person or integration
-# (a transcript, an email reply, a typed note). These are the events the
+# (a transcript, an inbound message, a typed note). These are the events the
 # extraction step reads from; none of them affect the projection.
-RAW_INPUT_TYPES = {"transcript_ingested", "email_reply_received", "manual_note"}
+RAW_INPUT_TYPES = {"transcript_ingested", "message_received", "manual_note"}
 
-# Outbound event types: a record of the agent acting on the world (sending
-# an email/reminder, opening a ticket, raising a flag, reporting to
+# Outbound event types: a record of the agent acting on the world (sending a
+# message on some channel, opening a ticket, raising a flag, reporting to
 # management). Like raw input, these have no effect on the projection --
 # see the comment on EVENT_TYPES above for the auto vs. gated split.
 OUTBOUND_EVENT_TYPES = {
-    "email_sent",
-    "reminder_sent",
+    "message_sent",
     "ticket_opened",
     "flag_raised",
     "report_to_management",

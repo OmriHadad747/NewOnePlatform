@@ -31,15 +31,53 @@ def auto_extract() -> bool:
     return os.environ.get("AIPM_AUTO_EXTRACT", "1").strip().lower() not in {"0", "false", "no", ""}
 
 
-def email_approval() -> bool:
-    """Whether an inbound email reply can approve/reject pending proposals.
+def message_approval() -> bool:
+    """Whether an inbound message reply can approve/reject pending proposals.
 
     On by default so approvals flow through the same channel as everything else
-    (email today; Slack/Teams later) -- a human replies and the agent resolves
+    (any channel: email, Slack, ...) -- a human replies and the agent resolves
     the pending request from that reply, no separate approve command needed.
-    Set AIPM_EMAIL_APPROVAL=0 to require explicit POST /proposals/{id}/approve.
+    Set AIPM_MESSAGE_APPROVAL=0 to require explicit POST /proposals/{id}/approve.
+    The legacy AIPM_EMAIL_APPROVAL name is still honored as a fallback.
     """
-    return os.environ.get("AIPM_EMAIL_APPROVAL", "1").strip().lower() not in {"0", "false", "no", ""}
+    raw = os.environ.get("AIPM_MESSAGE_APPROVAL")
+    if raw is None:
+        raw = os.environ.get("AIPM_EMAIL_APPROVAL", "1")
+    return raw.strip().lower() not in {"0", "false", "no", ""}
+
+
+def channel() -> str:
+    """The outbound channel adapter to deliver messages through.
+
+    Phase 1 ships only the `stub` channel (logs the message_sent event without
+    really sending). Real adapters (email, slack) register later behind the same
+    `Channel` seam; AIPM_CHANNEL selects one.
+    """
+    return os.environ.get("AIPM_CHANNEL", "stub").strip().lower() or "stub"
+
+
+def model_messages() -> bool:
+    """Whether the agent may compose its own short replies inside a thread.
+
+    On by default. These are info_request only -- a composed message can keep a
+    conversation going but never triggers a consequential action. Set
+    AIPM_MODEL_MESSAGES=0 to fall straight back to the templated nudge/escalation
+    ladder instead.
+    """
+    return os.environ.get("AIPM_MODEL_MESSAGES", "1").strip().lower() not in {"0", "false", "no", ""}
+
+
+def max_thread_turns() -> int:
+    """Cap on model-composed replies per thread before falling back to escalation.
+
+    Prevents the agent from chatting indefinitely when it can't get a clear
+    answer. After this many composed messages on one thread, the conversation
+    drops to the nudge/escalation backstop.
+    """
+    try:
+        return max(0, int(os.environ.get("AIPM_MAX_THREAD_TURNS", "3")))
+    except ValueError:
+        return 3
 
 
 def gemini_api_key() -> str | None:

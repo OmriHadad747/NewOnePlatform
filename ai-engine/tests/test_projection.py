@@ -215,7 +215,7 @@ def test_action_is_recorded_with_provenance():
             "evt_1",
             actions=[
                 {
-                    "type": "send_email",
+                    "type": "send_message",
                     "category": "info_request",
                     "payload": {"to": "bob", "body": "Can you share an update?"},
                     "provenance": {"asserted_by": "agent", "source_span": "ask bob for an update"},
@@ -228,7 +228,7 @@ def test_action_is_recorded_with_provenance():
 
     assert len(state.actions) == 1
     action = state.actions[0]
-    assert action.type == "send_email"
+    assert action.type == "send_message"
     assert action.category == "info_request"
     assert action.payload == {"to": "bob", "body": "Can you share an update?"}
     assert action.asserted_by == "agent"
@@ -241,7 +241,7 @@ def test_action_with_unknown_category_raises():
             "evt_1",
             actions=[
                 {
-                    "type": "send_email",
+                    "type": "send_message",
                     "category": "urgent",
                     "payload": {},
                     "provenance": {"asserted_by": "agent"},
@@ -260,7 +260,7 @@ def test_action_without_asserted_by_raises():
             "evt_1",
             actions=[
                 {
-                    "type": "send_email",
+                    "type": "send_message",
                     "category": "info_request",
                     "payload": {},
                     "provenance": {},

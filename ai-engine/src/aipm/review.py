@@ -9,9 +9,9 @@ so an answered question may read "closed"/"answered"/"resolved". Terminal
 statuses (see the sets below) are treated as done and not chased again.
 
 Rules:
-- OpenQuestion whose status is not terminal -> send_email (info_request)
-- Task where status in ("blocked", "stuck") -> send_email (info_request)
-- Task where status is "in_progress" -> send_reminder (info_request)
+- OpenQuestion whose status is not terminal -> send_message (info_request)
+- Task where status in ("blocked", "stuck") -> send_message (info_request)
+- Task where status is "in_progress" -> send_message, purpose=reminder (info_request)
 - Risk of high/critical severity, status not terminal, no owner -> raise_flag (consequential)
 - Deadline where due_date is in the past -> escalate_to_management (consequential)
 """
@@ -76,7 +76,7 @@ def _check_open_questions(state: ProjectState, result: ReviewResult) -> None:
         )
         result.issues.append(issue)
         result.actions.append({
-            "type": "send_email",
+            "type": "send_message",
             "category": "info_request",
             "payload": {
                 "to": _owner(entity.fields),
@@ -100,7 +100,7 @@ def _check_blocked_tasks(state: ProjectState, result: ReviewResult) -> None:
         )
         result.issues.append(issue)
         result.actions.append({
-            "type": "send_email",
+            "type": "send_message",
             "category": "info_request",
             "payload": {
                 "to": _owner(entity.fields),
@@ -124,12 +124,13 @@ def _check_in_progress_tasks(state: ProjectState, result: ReviewResult) -> None:
         )
         result.issues.append(issue)
         result.actions.append({
-            "type": "send_reminder",
+            "type": "send_message",
             "category": "info_request",
             "payload": {
                 "to": _owner(entity.fields),
                 "subject": f"Status check: task '{tid}'",
                 "body": f"Could you provide an update on task '{tid}'? Any blockers?",
+                "purpose": "reminder",
                 "review_rule": issue.rule,
                 "entity_id": tid,
             },

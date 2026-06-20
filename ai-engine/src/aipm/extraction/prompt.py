@@ -37,10 +37,9 @@ Rules:
   the soonest occurrence on/after TODAY (given in the variable section below).
 - Propose an action only when the text implies the agent should DO something.
   Use category `info_request` for routine info-gathering the agent can send on
-  its own, with type `send_email` or `send_reminder` (e.g. emailing a teammate
-  for an update or a transcript). Use category `consequential` for things that
-  need human sign-off, with type `open_ticket`, `raise_flag`, or
-  `escalate_to_management`.
+  its own, with type `send_message` (e.g. messaging a teammate for an update or
+  a transcript). Use category `consequential` for things that need human
+  sign-off, with type `open_ticket`, `raise_flag`, or `escalate_to_management`.
 
 Output STRICT JSON, no prose, in exactly this shape:
 {

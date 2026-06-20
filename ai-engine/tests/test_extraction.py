@@ -26,7 +26,7 @@ def _result() -> ExtractionResult:
         ],
         actions=[
             ProposedAction(
-                type="send_email",
+                type="send_message",
                 category="info_request",
                 payload={"to": "bob"},
                 source_span="ask Bob for the latest timeline",
@@ -64,7 +64,7 @@ def test_to_payload_is_applicable_by_projection():
 
     assert state.get("Risk", "vendor-delay").fields["severity"] == "high"
     assert len(state.actions) == 1
-    assert state.actions[0].type == "send_email"
+    assert state.actions[0].type == "send_message"
 
 
 def test_result_roundtrips_through_dict():

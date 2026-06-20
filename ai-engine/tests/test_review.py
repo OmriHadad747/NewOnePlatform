@@ -42,7 +42,7 @@ def test_no_issues_empty_state():
 # --- open questions -------------------------------------------------------------
 
 
-def test_open_question_triggers_send_email():
+def test_open_question_triggers_send_message():
     state = _state_with(OpenQuestion={
         "api-access": _entity("OpenQuestion", "api-access",
                                description="Who owns API access?", status="open"),
@@ -52,7 +52,7 @@ def test_open_question_triggers_send_email():
     assert result.issues[0].rule == "open_question"
     assert result.issues[0].entity_id == "api-access"
     action = result.actions[0]
-    assert action["type"] == "send_email"
+    assert action["type"] == "send_message"
     assert action["category"] == "info_request"
     assert "api-access" in action["payload"]["subject"]
 
@@ -84,14 +84,14 @@ def test_open_question_without_status_is_flagged():
 # --- blocked / stuck tasks -----------------------------------------------------
 
 
-def test_blocked_task_triggers_send_email():
+def test_blocked_task_triggers_send_message():
     state = _state_with(Task={
         "t1": _entity("Task", "t1", title="Deploy service", status="blocked"),
     })
     result = review_state(state, now=_NOW)
     assert len(result.issues) == 1
     assert result.issues[0].rule == "blocked_task"
-    assert result.actions[0]["type"] == "send_email"
+    assert result.actions[0]["type"] == "send_message"
     assert result.actions[0]["category"] == "info_request"
 
 
@@ -122,7 +122,7 @@ def test_open_task_not_flagged():
 # --- in-progress tasks ---------------------------------------------------------
 
 
-def test_in_progress_task_triggers_send_reminder():
+def test_in_progress_task_triggers_reminder_message():
     state = _state_with(Task={
         "t1": _entity("Task", "t1", status="in_progress", owner="alice"),
     })
@@ -130,8 +130,9 @@ def test_in_progress_task_triggers_send_reminder():
     assert len(result.issues) == 1
     assert result.issues[0].rule == "in_progress_task"
     action = result.actions[0]
-    assert action["type"] == "send_reminder"
+    assert action["type"] == "send_message"
     assert action["category"] == "info_request"
+    assert action["payload"]["purpose"] == "reminder"
     assert action["payload"]["to"] == "alice"
 
 

@@ -28,10 +28,12 @@ ACTION_CATEGORIES = {"info_request", "consequential"}
 # Action types the agent may propose, and the outbound event type that
 # records each one's (stubbed) execution -- immediately for `info_request`
 # actions, or once a `human_approval` applies a `consequential` one. See
-# `aipm.events` for the outbound event types themselves.
+# `aipm.events` for the outbound event types themselves. `send_message` is the
+# single info_request communication verb (it replaced the old send_email /
+# send_reminder split); a `purpose` in its payload distinguishes a status ping
+# from a reminder, but on the wire it's all one channel-agnostic message.
 ACTION_TYPE_OUTBOUND_EVENTS = {
-    "send_email": "email_sent",
-    "send_reminder": "reminder_sent",
+    "send_message": "message_sent",
     "open_ticket": "ticket_opened",
     "raise_flag": "flag_raised",
     "escalate_to_management": "report_to_management",
@@ -40,7 +42,7 @@ ACTION_TYPE_OUTBOUND_EVENTS = {
 # Fallback outbound event type, by category, for an action `type` not in
 # ACTION_TYPE_OUTBOUND_EVENTS above (e.g. a novel verb the model proposed).
 _DEFAULT_OUTBOUND_EVENT_BY_CATEGORY = {
-    "info_request": "email_sent",
+    "info_request": "message_sent",
     "consequential": "report_to_management",
 }
 

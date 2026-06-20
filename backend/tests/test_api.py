@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from aipm.approval import ApprovalResolution, ApprovalResult
+from aipm.conversation import ComposedMessage
 from aipm.extraction.types import ExtractionResult, ProposedAction, ProposedDelta
 
 from aipm_backend.extraction import StaticProvider, get_provider, get_provider_optional
@@ -29,13 +30,19 @@ def _use_provider(result: ExtractionResult):
     app.dependency_overrides[get_provider] = lambda: StaticProvider(result)
 
 
-def _use_auto_provider(result: ExtractionResult, approval_result: ApprovalResult | None = None):
+def _use_auto_provider(
+    result: ExtractionResult,
+    approval_result: ApprovalResult | None = None,
+    composed_message: ComposedMessage | None = None,
+):
     """Override the auto-extraction (POST /events) provider with a fixed fake.
 
-    The same provider serves both extraction and approval resolution; tests
-    re-call this between steps to swap what the fake returns.
+    The same provider serves extraction, approval resolution, and message
+    composition; tests re-call this between steps to swap what the fake returns.
     """
-    app.dependency_overrides[get_provider_optional] = lambda: StaticProvider(result, approval_result)
+    app.dependency_overrides[get_provider_optional] = lambda: StaticProvider(
+        result, approval_result, composed_message
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -238,7 +245,7 @@ def test_extract_auto_executes_info_request_actions(client):
         ExtractionResult(
             actions=[
                 ProposedAction(
-                    "send_email", "info_request", {"to": "bob", "subject": "Update?"},
+                    "send_message", "info_request", {"to": "bob", "subject": "Update?"},
                     source_span="the vendor API access is delayed again",
                 )
             ],
@@ -251,11 +258,11 @@ def test_extract_auto_executes_info_request_actions(client):
     # to review -- no agent_proposal is written
     assert body["proposal"] is None
     assert len(body["executed"]) == 1
-    assert body["executed"][0]["type"] == "email_sent"
+    assert body["executed"][0]["type"] == "message_sent"
     assert body["executed"][0]["payload"]["payload"]["to"] == "bob"
 
     events = client.get("/events").json()
-    assert any(e["type"] == "email_sent" for e in events)
+    assert any(e["type"] == "message_sent" for e in events)
 
     # no human_approval needed -- nothing pending, and state.actions is empty
     assert client.get("/proposals").json() == []
@@ -356,11 +363,11 @@ def test_review_state_open_question_auto_sends_email(client):
     assert len(body["issues"]) == 1
     assert body["issues"][0]["rule"] == "open_question"
     assert len(body["executed"]) == 1
-    assert body["executed"][0]["type"] == "email_sent"
+    assert body["executed"][0]["type"] == "message_sent"
     assert body["proposal"] is None
 
     events = client.get("/events").json()
-    assert any(e["type"] == "email_sent" for e in events)
+    assert any(e["type"] == "message_sent" for e in events)
 
 
 def test_review_state_blocked_task_auto_sends_email(client):
@@ -373,7 +380,7 @@ def test_review_state_blocked_task_auto_sends_email(client):
     body = client.post("/review-state").json()
 
     assert body["issues"][0]["rule"] == "blocked_task"
-    assert body["executed"][0]["type"] == "email_sent"
+    assert body["executed"][0]["type"] == "message_sent"
     assert body["executed"][0]["payload"]["payload"]["to"] == "alice"
 
 
@@ -479,7 +486,7 @@ def test_auto_extract_auto_sends_info_request(client, monkeypatch):
         ExtractionResult(
             actions=[
                 ProposedAction(
-                    "send_email", "info_request", {"to": "bob", "subject": "Update?"},
+                    "send_message", "info_request", {"to": "bob", "subject": "Update?"},
                     source_span="ask Bob for an update",
                 )
             ]
@@ -491,8 +498,8 @@ def test_auto_extract_auto_sends_info_request(client, monkeypatch):
     )
     extraction = response.json()["extraction"]
     assert extraction["proposal"] is None
-    assert extraction["executed"][0]["type"] == "email_sent"
-    assert any(e["type"] == "email_sent" for e in client.get("/events").json())
+    assert extraction["executed"][0]["type"] == "message_sent"
+    assert any(e["type"] == "message_sent" for e in client.get("/events").json())
 
 
 def test_auto_extract_off_returns_null(client):
@@ -529,7 +536,7 @@ def test_auto_extract_skips_non_raw_events(client, monkeypatch):
 def _email_reply(event_id, text, source="maya@orion.com"):
     return {
         "id": event_id,
-        "type": "email_reply_received",
+        "type": "message_received",
         "timestamp": "2025-02-03T10:00:00Z",
         "source": source,
         "raw_text": text,
@@ -560,7 +567,7 @@ def test_consequential_proposal_sends_approval_request_email(client, monkeypatch
     # the agent reaches out (stub) to ask a human to authorize the proposal
     asks = [
         e for e in client.get("/events").json()
-        if e["type"] == "email_sent" and e["payload"]["payload"].get("proposal_id") == proposal_id
+        if e["type"] == "message_sent" and e["payload"]["payload"].get("proposal_id") == proposal_id
     ]
     assert len(asks) == 1
 
@@ -723,7 +730,7 @@ def test_deferred_reply_sends_nudge(client, monkeypatch):
     assert approvals["escalated"] == []
     assert approvals["approved"] == []
     assert any(
-        e["type"] == "email_sent" and e["source"] == "agent:approval-nudge"
+        e["type"] == "message_sent" and e["source"] == "agent:approval-nudge"
         for e in client.get("/events").json()
     )
     assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
@@ -742,7 +749,7 @@ def test_second_deferred_reply_sends_escalation(client, monkeypatch):
     assert approvals["nudged"] == []
     assert [e["proposal_id"] for e in approvals["escalated"]] == [proposal_id]
     assert any(
-        e["type"] == "email_sent" and e["source"] == "agent:approval-escalation"
+        e["type"] == "message_sent" and e["source"] == "agent:approval-escalation"
         for e in client.get("/events").json()
     )
     assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
@@ -851,7 +858,7 @@ def test_approval_request_goes_to_pm_not_team(client, monkeypatch):
 
     ask = next(
         e for e in client.get("/events").json()
-        if e["type"] == "email_sent" and e["payload"]["payload"].get("proposal_id") == proposal_id
+        if e["type"] == "message_sent" and e["payload"]["payload"].get("proposal_id") == proposal_id
     )
     assert ask["payload"]["payload"]["to"] == "pm@company.com"
 
@@ -944,7 +951,7 @@ def test_batch_approval_fans_out_to_owners_without_opening(client, monkeypatch):
     assert {p["payload"]["approver"] for p in pending} == {"dana", "eran"}
     asks = [
         e["payload"]["payload"]["to"] for e in client.get("/events").json()
-        if e["type"] == "email_sent" and e["source"] == "agent:approval-request"
+        if e["type"] == "message_sent" and e["source"] == "agent:approval-request"
         and e["payload"]["payload"].get("proposal_id") in {p["id"] for p in pending}
     ]
     assert set(asks) == {"dana", "eran"}
@@ -1009,9 +1016,153 @@ def test_unapplicable_update_triggers_clarification(client, monkeypatch):
     # the ghost update is held out and a clarification email goes to the author
     assert [c["entity_id"] for c in extraction["clarifications"]] == ["ghost-decision"]
     assert any(
-        e["type"] == "email_sent" and e["source"] == "agent:clarification"
+        e["type"] == "message_sent" and e["source"] == "agent:clarification"
         for e in client.get("/events").json()
     )
     # the valid delta still made it into the proposal
     kept = [d["entity_id"] for d in extraction["proposal"]["payload"]["deltas"]]
     assert kept == ["real-risk"]
+
+
+# --- threads, channel stamping, and model-composed replies --------------------
+
+
+def _thread_id_of(client, proposal_id: str) -> str:
+    """The thread_id the agent opened for a given pending proposal."""
+    proposal = next(p for p in client.get("/proposals").json() if p["id"] == proposal_id)
+    return proposal["payload"]["thread_id"]
+
+
+def _threaded_reply(event_id, text, thread_id, source="pm@company.com"):
+    return {
+        "id": event_id,
+        "type": "message_received",
+        "timestamp": "2025-02-03T10:00:00Z",
+        "source": source,
+        "raw_text": text,
+        "payload": {"thread_id": thread_id},
+    }
+
+
+def test_outbound_message_is_stamped_with_channel_and_thread(client, monkeypatch):
+    """Every message_sent carries channel + thread_id + a channel-side id."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+    tid = _thread_id_of(client, proposal_id)
+
+    ask = next(
+        e for e in client.get("/events").json()
+        if e["type"] == "message_sent" and e["source"] == "agent:approval-request"
+    )
+    inner = ask["payload"]["payload"]
+    assert inner["channel"] == "stub"
+    assert inner["thread_id"] == tid
+    assert inner["message_id"].startswith("stub_")
+
+
+def test_threaded_reply_approves_without_re_extracting(client, monkeypatch):
+    """The duplicate-ticket bug is dissolved: an approval reply on a thread is
+    consumed as an approval only and is NEVER re-mined for new actions."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+    tid = _thread_id_of(client, proposal_id)
+
+    # The provider WOULD re-propose the very same ticket if extraction ran on
+    # the reply text -- exactly the old duplicate bug.
+    _use_auto_provider(
+        ExtractionResult(
+            actions=[
+                ProposedAction(
+                    "open_ticket", "consequential", {"title": "Resolve PayPal support"},
+                    source_span="open a ticket about PayPal",
+                )
+            ]
+        ),
+        ApprovalResult([ApprovalResolution(proposal_id, "approve", "yes, open it")]),
+    )
+    reply = client.post("/events", json=_threaded_reply("raw_reply", "Yes, go ahead.", tid))
+    body = reply.json()
+
+    # approved on the thread ...
+    assert [a["payload"]["approves"] for a in body["approvals"]["approved"]] == [proposal_id]
+    # ... and extraction was skipped because the reply is threaded -> no duplicate
+    assert body["extraction"] is None
+    assert client.get("/proposals").json() == []
+    opened = [e for e in client.get("/events").json() if e["type"] == "ticket_opened"]
+    assert len(opened) == 1
+
+
+def test_threaded_ambiguous_reply_composes_message(client, monkeypatch):
+    """A threaded reply that doesn't approve/reject lets the model say something
+    short (info_request only) instead of a canned nudge."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    proposal_id = _pending_consequential_proposal(client)
+    tid = _thread_id_of(client, proposal_id)
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "defer", "depends on legal")]),
+        ComposedMessage(send=True, text="Understood -- should I wait for legal sign-off first?"),
+    )
+    reply = client.post(
+        "/events", json=_threaded_reply("raw_reply", "Depends on whether legal signed off.", tid)
+    )
+    approvals = reply.json()["approvals"]
+
+    # the agent composed a reply on the thread, and did NOT fall to the ladder
+    assert [c["proposal_id"] for c in approvals["composed"]] == [proposal_id]
+    assert approvals["nudged"] == []
+    assert approvals["escalated"] == []
+
+    composed = [e for e in client.get("/events").json() if e["source"] == "agent:compose"]
+    assert len(composed) == 1
+    assert composed[0]["type"] == "message_sent"
+    assert composed[0]["payload"]["category"] == "info_request"  # never consequential
+    assert composed[0]["payload"]["payload"]["thread_id"] == tid
+
+    # nothing applied; the proposal is still pending its real decision
+    assert [p["id"] for p in client.get("/proposals").json()] == [proposal_id]
+    assert client.get("/state").json()["actions"] == []
+
+
+def test_thread_turn_cap_falls_back_to_ladder(client, monkeypatch):
+    """After the per-thread compose cap, ambiguous replies drop to the nudge ladder."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    monkeypatch.setenv("AIPM_MAX_THREAD_TURNS", "1")
+    proposal_id = _pending_consequential_proposal(client)
+    tid = _thread_id_of(client, proposal_id)
+
+    msg = ComposedMessage(send=True, text="One more question to move this forward?")
+    _use_auto_provider(
+        ExtractionResult(), ApprovalResult([ApprovalResolution(proposal_id, "defer", "")]), msg
+    )
+    first = client.post("/events", json=_threaded_reply("raw_r1", "still thinking", tid))
+    assert [c["proposal_id"] for c in first.json()["approvals"]["composed"]] == [proposal_id]
+
+    # second ambiguous reply: cap (1) reached -> ladder nudges instead of composing
+    _use_auto_provider(
+        ExtractionResult(), ApprovalResult([ApprovalResolution(proposal_id, "defer", "")]), msg
+    )
+    second = client.post("/events", json=_threaded_reply("raw_r2", "still thinking more", tid))
+    approvals = second.json()["approvals"]
+    assert approvals["composed"] == []
+    assert [n["proposal_id"] for n in approvals["nudged"]] == [proposal_id]
+
+
+def test_model_messages_off_uses_ladder_on_thread(client, monkeypatch):
+    """With AIPM_MODEL_MESSAGES=0 the agent never composes -- straight to the ladder."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    monkeypatch.setenv("AIPM_MODEL_MESSAGES", "0")
+    proposal_id = _pending_consequential_proposal(client)
+    tid = _thread_id_of(client, proposal_id)
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "defer", "")]),
+        ComposedMessage(send=True, text="should not be sent"),
+    )
+    reply = client.post("/events", json=_threaded_reply("raw_r1", "hmm", tid))
+    approvals = reply.json()["approvals"]
+    assert approvals["composed"] == []
+    assert [n["proposal_id"] for n in approvals["nudged"]] == [proposal_id]
+    assert not any(e["source"] == "agent:compose" for e in client.get("/events").json())

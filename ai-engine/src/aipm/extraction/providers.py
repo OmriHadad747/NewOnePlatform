@@ -20,6 +20,7 @@ from aipm.extraction.types import ExtractionResult
 
 if TYPE_CHECKING:  # avoid a cycle: aipm.approval imports aipm.extraction.prompt
     from aipm.approval import ApprovalResult
+    from aipm.conversation import ComposedMessage
 
 
 @runtime_checkable
@@ -30,6 +31,10 @@ class ExtractionProvider(Protocol):
 
     def resolve_approvals(self, prompt: ExtractionPrompt) -> "ApprovalResult":
         """Map a human's reply onto pending proposals (approve/reject/defer)."""
+        ...
+
+    def compose_message(self, prompt: ExtractionPrompt) -> "ComposedMessage":
+        """Compose the agent's next short (info_request) reply in a thread."""
         ...
 
 

@@ -14,9 +14,9 @@ aipm init <name> [--description ...] [--team alice bob]
 
 # input -- mint a raw-input event from text. With auto-extraction on (the
 # backend default), each of these extracts, proposes, and auto-sends any
-# info_request emails in the same step, printing the result inline.
+# info_request messages in the same step, printing the result inline.
 aipm note <text>              # a manual_note (--source)
-aipm email-in <text>          # an email_reply_received (--from <sender>)
+aipm message-in <text>        # a message_received (--from <sender>, --channel, --thread)
 aipm transcript <text>        # a transcript_ingested (--source)
 aipm append <event.json>      # POST a hand-written event JSON
 
@@ -45,11 +45,11 @@ A typical end-to-end run (auto-extraction on, a provider configured):
 # 0. define the project once
 aipm init "Apollo" --description "Ship the lander" --team alice bob
 
-# 1. an email reply lands from a vendor -- the agent extracts, proposes, and
-#    auto-sends any info_request emails right here, printing the result inline.
-aipm email-in "The vendor API access is delayed two weeks." --from vendor@acme.com
-#   -> Added email_reply_received [raw_05c61cb2]
-#   -> Extraction result ... Proposal prop_... / [SIMULATED] email_sent ...
+# 1. a message reply lands from a vendor -- the agent extracts, proposes, and
+#    auto-sends any info_request messages right here, printing the result inline.
+aipm message-in "The vendor API access is delayed two weeks." --from vendor@acme.com
+#   -> Added message_received [raw_05c61cb2]
+#   -> Extraction result ... Proposal prop_... / [SIMULATED] message_sent ...
 
 # 2. review and approve -- the one place text becomes state. Any consequential
 #    action (open_ticket / raise_flag / escalate_to_management) then fires as a
@@ -66,14 +66,14 @@ aipm events     # the whole log, outbound events flagged [SIMULATED]
 ```
 
 Without a provider configured (no API key), or with `AIPM_AUTO_EXTRACT=0`,
-`email-in`/`note`/`transcript` just log the event and tell you to run
+`message-in`/`note`/`transcript` just log the event and tell you to run
 `aipm extract <id>` yourself -- the manual path still works the same.
 
-The two email directions in the loop are both just events:
+The two message directions in the loop are both just events:
 
-- **inbound** (a reply to one of the agent's questions) -> `aipm email-in ...`
+- **inbound** (a reply to one of the agent's questions) -> `aipm message-in ...`
 - **outbound** (the agent asking for status/clarification, or escalating) ->
-  an `email_sent` / `reminder_sent` / `ticket_opened` / `flag_raised` /
+  a `message_sent` / `ticket_opened` / `flag_raised` /
   `report_to_management` event, written by the backend and shown `[SIMULATED]`.
 
 `info_request` emails (asking for a status update or a clarification on an open

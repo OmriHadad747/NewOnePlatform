@@ -74,6 +74,7 @@ aipm state | events | proposals | review
 | `AIPM_CHANNEL` | `stub` | outbound channel adapter (only `stub` ships today) |
 | `AIPM_MODEL_MESSAGES` | `1` | let the agent compose its own short in-thread replies (info_request only) |
 | `AIPM_MAX_THREAD_TURNS` | `3` | cap on model-composed replies per thread before falling back to escalation |
+| `AIPM_TRACE_DIR` | — | if set, write one JSON file per model call (prompt + result) here, for inspecting the model's decisions |
 
 ## Gotchas
 

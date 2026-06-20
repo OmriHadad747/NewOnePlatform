@@ -94,3 +94,15 @@ def claude_api_key() -> str | None:
 
 def claude_model() -> str:
     return os.environ.get("AIPM_CLAUDE_MODEL", "claude-haiku-4-5")
+
+
+def trace_dir() -> str | None:
+    """Folder to write a per-call trace of every model interaction, or None.
+
+    When AIPM_TRACE_DIR is set, each extract / resolve_approvals /
+    compose_message call writes one JSON file there with the exact prompt the
+    model saw and the result it returned -- so you can inspect its decisions and
+    see where the prompts need strengthening. Off (None) unless the dir is set;
+    it never touches the event log or projection.
+    """
+    return os.environ.get("AIPM_TRACE_DIR") or None

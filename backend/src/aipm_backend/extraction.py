@@ -200,8 +200,7 @@ class StaticProvider:
         return self._composed_message
 
 
-def build_provider(name: str | None = None) -> ExtractionProvider:
-    name = name or config.extraction_provider()
+def _build_concrete(name: str) -> ExtractionProvider:
     if name == "gemini":
         key = config.gemini_api_key()
         if not key:
@@ -217,6 +216,20 @@ def build_provider(name: str | None = None) -> ExtractionProvider:
             )
         return ClaudeProvider(key, config.claude_model())
     raise ValueError(f"unknown extraction provider: {name!r}")
+
+
+def build_provider(name: str | None = None) -> ExtractionProvider:
+    name = name or config.extraction_provider()
+    provider = _build_concrete(name)
+    # When AIPM_TRACE_DIR is set, transparently record every model call's prompt
+    # and result to that folder. Wrapping here means every code path (extract,
+    # approvals, compose) is traced without touching the backend's logic.
+    trace_dir = config.trace_dir()
+    if trace_dir:
+        from aipm_backend.tracing import TracingProvider
+
+        provider = TracingProvider(provider, trace_dir)
+    return provider
 
 
 def get_provider() -> ExtractionProvider:

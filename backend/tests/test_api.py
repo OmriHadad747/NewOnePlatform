@@ -1615,6 +1615,50 @@ def test_partial_approval_keeps_dependency_but_records_done(client, monkeypatch)
     assert "Dependency 'dep1'" in body  # the kept (declined) structural change
 
 
+def test_reply_on_closed_thread_reminds_to_open_new_note(client, monkeypatch):
+    """A reply on a closed thread is not dropped silently: the sender is told to
+    send a fresh note -- bounded, so it never nags."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    revision_id, revtid = _reach_pending_revision(client)
+
+    # PM declines -> dana's original thread is now closed, and she's notified.
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(revision_id, "reject", reason_span="dep is real")]),
+    )
+    client.post("/events", json={
+        "id": "raw_pm", "type": "message_received", "timestamp": "2025-02-03T11:00:00Z",
+        "source": "pm@helios.com", "raw_text": "No, keep it.", "payload": {"thread_id": revtid},
+    })
+    dana_thread = _outcome_messages_to(client, "dana@helios.com")[0]["payload"]["payload"]["thread_id"]
+
+    def _hints():
+        return [e for e in client.get("/events").json()
+                if e["type"] == "message_sent" and e["source"] == "agent:reopen-hint"
+                and e["payload"]["payload"]["to"] == "dana@helios.com"]
+
+    # dana replies on the closed thread instead of opening a new note.
+    _use_auto_provider(ExtractionResult())
+    r = client.post("/events", json={
+        "id": "d1", "type": "message_received", "timestamp": "2025-02-03T12:00:00Z",
+        "source": "dana@helios.com", "raw_text": "But it really is wrong!",
+        "payload": {"thread_id": dana_thread},
+    })
+    assert r.json()["reopen_hint"] is not None
+    body = _hints()[0]["payload"]["payload"]["body"]
+    assert "new note" in body.lower()
+    assert len(_hints()) == 1
+
+    # She keeps replying -- the reminder is capped, not repeated forever.
+    for i in range(3):
+        client.post("/events", json={
+            "id": f"d{i+2}", "type": "message_received", "timestamp": "2025-02-03T13:00:00Z",
+            "source": "dana@helios.com", "raw_text": "still wrong",
+            "payload": {"thread_id": dana_thread},
+        })
+    assert len(_hints()) == 2  # _MAX_REOPEN_HINTS
+
+
 def _thread_of(client, proposal_id):
     """Find the thread_id the agent opened for a given proposal."""
     for e in client.get("/events").json():

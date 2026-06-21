@@ -690,6 +690,57 @@ def _compose_thread_reply(
     )
 
 
+# Reminder for a reply that lands on a thread whose conversation is already
+# closed (nothing pending). We point the sender at the one channel that DOES
+# reopen things -- a fresh note -- but only on a thread we actually used, and at
+# most a couple of times, so a "thanks!" never turns into nagging.
+_REOPEN_HINT_SOURCE = "agent:reopen-hint"
+_MAX_REOPEN_HINTS = 2
+
+
+def _maybe_remind_new_note(reply: Event, events: list[Event]) -> dict | None:
+    """If a reply landed on a closed thread, remind the sender to open a new note.
+
+    A reply on a thread with no pending request has nothing to resolve, so it
+    would otherwise be dropped silently (threaded replies are never re-mined for
+    new actions). We nudge the sender to send a fresh note -- which DOES re-enter
+    extraction -- but stay quiet unless the agent actually used this thread, and
+    never send more than `_MAX_REOPEN_HINTS` reminders on it.
+    """
+    thread_id = reply.payload.get("thread_id")
+    agent_spoke = any(
+        e.type == "message_sent" and e.payload.get("payload", {}).get("thread_id") == thread_id
+        for e in events
+    )
+    if not agent_spoke:
+        return None
+    hints = sum(
+        1 for e in events
+        if e.type == "message_sent" and e.source == _REOPEN_HINT_SOURCE
+        and e.payload.get("payload", {}).get("thread_id") == thread_id
+    )
+    if hints >= _MAX_REOPEN_HINTS:
+        return None  # already reminded enough -- go quiet
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": reply.source,
+            "subject": "This thread is closed -- send a new note to reopen",
+            "body": (
+                "Thanks for your message. This conversation is already closed, so "
+                "there's nothing here for me to act on. If you'd like me to look "
+                "into it, please send a NEW note (not a reply to this thread) and "
+                "I'll take it from there."
+            ),
+            "thread_id": thread_id,
+        },
+    }
+    return _write_outbound_event(
+        action, source=_REOPEN_HINT_SOURCE, source_event_id=reply.id, thread_id=thread_id
+    )
+
+
 def _resolve_approvals_from_reply(
     reply: Event, provider: ExtractionProvider
 ) -> dict | None:
@@ -1071,6 +1122,25 @@ def create_event(
         except Exception as exc:  # provider/network failure -- don't fail the append
             approvals = {"error": f"approval resolution failed: {exc}"}
 
+    # A reply that lands on a thread with no pending request has nothing to
+    # resolve (`approvals is None`) and is never re-mined for new actions -- so
+    # it would vanish silently. If the agent had a conversation on that thread,
+    # remind the sender that a reply here won't reopen it; a fresh note will.
+    reopen_hint = None
+    reply_thread = (
+        new_event.payload.get("thread_id")
+        if new_event.type == "message_received" and new_event.raw_text
+        else None
+    )
+    if config.message_approval() and reply_thread and approvals is None:
+        events_now = storage.read_events()
+        pending_here = [
+            p for p in _pending_proposals(events_now)
+            if p.payload.get("thread_id") == reply_thread
+        ]
+        if not pending_here:  # truly nothing open on this thread
+            reopen_hint = _maybe_remind_new_note(new_event, events_now)
+
     # A reply that arrives ON a thread is consumed purely as an in-conversation
     # reply (handled above): it is NOT re-mined for new actions. This is what
     # keeps an approval ("yes, open it") from re-proposing the very ticket it
@@ -1101,7 +1171,12 @@ def create_event(
             except Exception as exc:  # provider/network failure -- don't fail the append
                 extraction = {"error": f"auto-extraction failed: {exc}"}
 
-    return {**asdict(new_event), "approvals": approvals, "extraction": extraction}
+    return {
+        **asdict(new_event),
+        "approvals": approvals,
+        "extraction": extraction,
+        "reopen_hint": reopen_hint,
+    }
 
 
 @app.get("/events")

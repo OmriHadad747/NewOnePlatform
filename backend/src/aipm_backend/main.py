@@ -32,13 +32,12 @@ Extraction / approval flow (Step 3):
                                       with open deps, risk downgraded) for the
                                       human reviewer; advisory only, never block.
   GET  /proposals                  -- proposals still awaiting approval
-  POST /proposals/{id}/approve     -- approve a proposal: write a
-                                      human_approval that applies its
-                                      deltas/actions to state, then execute
-                                      (stub) its consequential actions and
-                                      log their outbound events
-                                      (ticket_opened/flag_raised/
-                                      report_to_management)
+
+  Approval itself is not an endpoint: a human approves by REPLYING on the
+  thread (a message_received the agent resolves against the pending proposal --
+  see _resolve_approvals_from_reply). That reply path applies the proposal's
+  deltas/actions, executes (stub) its consequential actions, gates on
+  inconsistent outcomes, and closes the loop with whoever raised it.
 """
 
 from __future__ import annotations
@@ -245,8 +244,8 @@ def _apply_approval(
     acknowledged_conflicts: list[dict] | None = None,
 ) -> Event:
     """Write a human_approval that applies a proposal's deltas/actions to state,
-    then execute (stub) its consequential actions. Shared by the explicit
-    approve endpoint and the email-reply approval path.
+    then execute (stub) its consequential actions. Reached from the reply-based
+    approval path, the one place an approval happens.
 
     `apply_only` (a list of entity ids) authorizes a SUBSET of a bundled
     proposal's deltas -- the human approved some changes and declined others
@@ -1400,26 +1399,6 @@ def review_state_endpoint() -> dict:
 @app.get("/proposals")
 def list_proposals() -> list[dict]:
     return [asdict(e) for e in _pending_proposals(storage.read_events())]
-
-
-@app.post("/proposals/{proposal_id}/approve", status_code=201)
-def approve_proposal(proposal_id: str) -> dict:
-    events = storage.read_events()
-
-    proposal = next(
-        (e for e in events if e.type == "agent_proposal" and e.id == proposal_id), None
-    )
-    if proposal is None:
-        raise HTTPException(status_code=404, detail=f"proposal {proposal_id!r} not found")
-
-    try:
-        outcome = _resolve_proposal_approval(proposal, events, source="approval")
-    except ProjectionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    # A ticket batch fans out to per-owner confirmation proposals instead of
-    # applying anything; a normal approval returns the human_approval event.
-    return outcome if isinstance(outcome, dict) else asdict(outcome)
 
 
 def _tasks_with_tickets(events: list[Event]) -> set[str]:

@@ -17,7 +17,8 @@ safely and fast — it does not repeat the READMEs.
   trail with no projection effect.
 - **Approval flows through the channel, not a command.** A human approves by
   replying with a message (`message-in`) — the model resolves the reply against
-  pending proposals (`aipm.approval`). `aipm approve` is a dev-only fallback.
+  pending proposals (`aipm.approval`). This is the ONLY way to approve: there is
+  no approve command or endpoint.
 - **Messages, threads, channels.** Every agent↔human contact is a `message_sent`
   / `message_received` on a `thread_id`, over a `channel` (email/Slack/…; only
   the `stub` channel ships today, behind the `Channel` seam in

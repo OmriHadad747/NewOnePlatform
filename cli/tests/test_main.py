@@ -20,7 +20,6 @@ from aipm.projection import ProjectionError, apply_event, project
 from aipm_cli.main import (
     cmd_add_raw,
     cmd_append,
-    cmd_approve,
     cmd_events,
     cmd_extract,
     cmd_init,
@@ -28,7 +27,6 @@ from aipm_cli.main import (
     cmd_replay,
     cmd_review,
     cmd_state,
-    render_approval,
     render_events,
     render_extract,
     render_proposals,
@@ -148,18 +146,6 @@ def test_cmd_proposals_prints_list(capsys):
     client = _client(lambda r: httpx.Response(200, json=[{"id": "prop_1"}]))
     assert cmd_proposals(client, as_json=True) == 0
     assert json.loads(capsys.readouterr().out) == [{"id": "prop_1"}]
-
-
-def test_cmd_approve_posts_and_prints(capsys):
-    seen = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen["path"] = request.url.path
-        return httpx.Response(201, json={"id": "appr_1", "payload": {"approves": "prop_1"}})
-
-    assert cmd_approve(_client(handler), "prop_1", as_json=True) == 0
-    assert seen["path"] == "/proposals/prop_1/approve"
-    assert json.loads(capsys.readouterr().out)["payload"]["approves"] == "prop_1"
 
 
 # --- project init -------------------------------------------------------------
@@ -291,7 +277,7 @@ def test_render_extract_shows_simulated_outbound_and_conflicts():
     assert "to=bob" in out
     assert "deadline_regression on sprint-end" in out
     assert "ungrounded" in out
-    assert "aipm approve prop_1" in out
+    assert "aipm message-in" in out  # approve by replying, not a command
 
 
 def test_render_extract_no_proposal():
@@ -355,26 +341,8 @@ def test_render_proposals_lists_pending():
     assert "prop_1" in out
     assert "create Risk 'r1'" in out
     assert "open_ticket" in out
-    assert "aipm approve prop_1" in out
-
-
-def test_render_approval_shows_simulated_actions():
-    approval = {
-        "id": "appr_1",
-        "payload": {"approves": "prop_1",
-                    "deltas": [{"op": "create"}],
-                    "actions": [{"type": "open_ticket", "payload": {"system": "jira"}}]},
-    }
-    out = render_approval(approval)
-    assert "Approved prop_1 -> appr_1" in out
-    assert "[SIMULATED] open_ticket" in out
-    assert "system=jira" in out
-
-
-def test_cmd_approve_error(capsys):
-    client = _client(lambda r: httpx.Response(404, json={"detail": "no proposal"}))
-    assert cmd_approve(client, "nope") == 1
-    assert "no proposal" in capsys.readouterr().err
+    # approval happens by replying on the thread, never via a command
+    assert "aipm message-in" in out
 
 
 # --- review -------------------------------------------------------------------
@@ -452,7 +420,7 @@ def test_render_review_with_consequential_proposal():
     assert "prop_abc123" in out
     assert "[SIMULATED]" not in out
     assert "raise_flag" in out
-    assert "aipm approve prop_abc123" in out
+    assert "aipm message-in" in out  # approve by replying, not a command
 
 
 @pytest.mark.parametrize("scenario_path", sorted(SCENARIOS_DIR.glob("*.yaml")), ids=lambda p: p.stem)

@@ -55,8 +55,8 @@ A `human_approval` payload has two parts, both optional:
 its own as soon as they're proposed, logging a `message_sent` event
 immediately. `aipm.entities.outbound_event_type()`
 maps an action's `type` to its outbound event type; this routing (and the
-auto vs. gated split) is applied by the backend's `/extract` and
-`/proposals/{id}/approve` endpoints -- see `backend/README.md`.
+auto vs. gated split) is applied by the backend's `/extract` endpoint and the
+reply-based approval path -- see `backend/README.md`.
 
 ## Extraction core (Step 3)
 

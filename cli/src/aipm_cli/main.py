@@ -9,10 +9,11 @@ proposes, and auto-sends info_request emails in the same step):
   message-in <text>        -- append a message_received event (--from, --channel,
                               --thread). If proposals are pending, the reply is
                               also read as an approval: "yes, go ahead" authorizes
-                              them, so approving happens in the channel, no approve
-                              needed. With --thread, it's scoped to that
-                              conversation's proposal (and the agent may reply in
-                              the thread if the message is ambiguous).
+                              them. This is the ONLY way to approve -- approving
+                              happens in the channel, never via a command. With
+                              --thread, it's scoped to that conversation's proposal
+                              (and the agent may reply in the thread if the message
+                              is ambiguous).
   transcript <text>        -- append a transcript_ingested event
   append <event.json>      -- POST a hand-written event JSON to the backend
 
@@ -24,11 +25,8 @@ Inspect / drive the loop:
                                for anything needing approval, auto-executes
                                info_request emails (logged, not really sent),
                                and surfaces conflict warnings
-  proposals                 -- proposals awaiting approval
-  approve <proposal_id>     -- (dev fallback) approve a proposal directly;
-                               normally you approve by replying via email-in.
-                               Applies it to state; any consequential action
-                               then "executes" as a [SIMULATED] outbound event
+  proposals                 -- proposals awaiting approval (approve by replying
+                               with message-in on the proposal's thread)
   replay <scenario.yaml>   -- post a scenario's events in order and check its
                                checkpoints against the live backend
   review                    -- scan current state for issues and emit follow-up
@@ -161,7 +159,6 @@ def render_extract(body: dict) -> str:
     if proposal:
         lines.append("")
         lines.append(f"Next: reply to approve, e.g.  aipm message-in \"yes, go ahead\" --thread {proposal['payload'].get('thread_id', '<thread>')}")
-        lines.append(f"      (or, for dev:  aipm approve {proposal['id']})")
 
     return "\n".join(lines)
 
@@ -303,7 +300,8 @@ def render_proposals(proposals: list[dict]) -> str:
             lines.append(f"    delta: {d['op']} {d['entity_type']} {d['entity_id']!r}")
         for a in payload.get("actions", []):
             lines.append(f"    action: {a['type']} [{a.get('category', '?')}]")
-        lines.append(f"    approve with: aipm approve {p['id']}")
+        thread = p.get("payload", {}).get("thread_id", "<thread>")
+        lines.append(f"    approve by replying: aipm message-in \"yes, go ahead\" --thread {thread}")
     return "\n".join(lines)
 
 
@@ -341,22 +339,9 @@ def render_review(body: dict) -> str:
         lines.append(f"Proposal {proposal['id']} -- needs your approval:")
         for a in payload.get("actions", []):
             lines.append(f"  ! {a['type']}: {_fields(a.get('payload', {}))}")
-        lines.append(f"Next: aipm approve {proposal['id']}")
+        thread = payload.get("thread_id", "<thread>")
+        lines.append(f"Next: reply to approve, e.g.  aipm message-in \"yes, go ahead\" --thread {thread}")
 
-    return "\n".join(lines)
-
-
-def render_approval(approval: dict) -> str:
-    payload = approval.get("payload", {})
-    lines = [
-        f"Approved {payload.get('approves', '?')} -> {approval['id']}",
-        f"  applied {len(payload.get('deltas', []))} delta(s) to state",
-    ]
-    actions = payload.get("actions", [])
-    if actions:
-        lines.append(f"  executed {len(actions)} consequential action(s):")
-        for a in actions:
-            lines.append(f"    >> [SIMULATED] {a['type']}: {_fields(a.get('payload', {}))}")
     return "\n".join(lines)
 
 
@@ -588,15 +573,6 @@ def cmd_close(client: httpx.Client, reason: str | None, as_json: bool = False) -
     return 0
 
 
-def cmd_approve(client: httpx.Client, proposal_id: str, as_json: bool = False) -> int:
-    response = client.post(f"/proposals/{proposal_id}/approve")
-    if response.status_code >= 400:
-        return _error(response)
-    body = response.json()
-    print(json.dumps(body, indent=2) if as_json else render_approval(body))
-    return 0
-
-
 def cmd_replay(client: httpx.Client, scenario_file: str) -> int:
     scenario = yaml.safe_load(Path(scenario_file).read_text())
     checkpoints_by_event = {c["after_event"]: c["assert"] for c in scenario["checkpoints"]}
@@ -727,11 +703,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="scan current state for issues (open questions, blocked tasks, etc.)",
     )
 
-    approve_parser = subparsers.add_parser(
-        "approve", help="approve a proposal (applies it to state)"
-    )
-    approve_parser.add_argument("proposal_id")
-
     subparsers.add_parser(
         "open-tickets",
         help="propose opening a ticket per task (PM approves the batch, owners confirm each)",
@@ -787,8 +758,6 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_proposals(client, as_json)
         if args.command == "review":
             return cmd_review(client, as_json)
-        if args.command == "approve":
-            return cmd_approve(client, args.proposal_id, as_json)
         if args.command == "open-tickets":
             return cmd_open_tickets(client, as_json)
         if args.command == "close":

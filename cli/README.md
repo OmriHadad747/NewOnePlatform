@@ -24,8 +24,7 @@ aipm append <event.json>      # POST a hand-written event JSON
 aipm events                    # the full event log
 aipm state                     # the current projected state (incl. project meta)
 aipm extract <event_id>        # manually run extraction on a raw event
-aipm proposals                 # proposals awaiting approval
-aipm approve <proposal_id>     # approve a proposal -> applied to state
+aipm proposals                 # proposals awaiting approval (approve by replying)
 aipm review                    # scan state for follow-ups (open Qs, blockers...)
 aipm replay <scenario.yaml>   # replay a scenario and check its checkpoints
 ```
@@ -51,11 +50,12 @@ aipm message-in "The vendor API access is delayed two weeks." --from vendor@acme
 #   -> Added message_received [raw_05c61cb2]
 #   -> Extraction result ... Proposal prop_... / [SIMULATED] message_sent ...
 
-# 2. review and approve -- the one place text becomes state. Any consequential
+# 2. review and approve -- the one place text becomes state. Approve by REPLYING
+#    on the proposal's thread (there is no approve command); any consequential
 #    action (open_ticket / raise_flag / escalate_to_management) then fires as a
 #    [SIMULATED] outbound event.
 aipm proposals
-aipm approve prop_05c61cb2
+aipm message-in "yes, go ahead" --from pm@acme.com --thread thr_05c61cb2
 
 # 3. let the agent scan for follow-ups it should chase on its own
 aipm review     # open questions, blocked/in-progress tasks, unowned risks...

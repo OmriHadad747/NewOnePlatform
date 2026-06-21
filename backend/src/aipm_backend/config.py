@@ -36,9 +36,10 @@ def message_approval() -> bool:
 
     On by default so approvals flow through the same channel as everything else
     (any channel: email, Slack, ...) -- a human replies and the agent resolves
-    the pending request from that reply, no separate approve command needed.
-    Set AIPM_MESSAGE_APPROVAL=0 to require explicit POST /proposals/{id}/approve.
-    The legacy AIPM_EMAIL_APPROVAL name is still honored as a fallback.
+    the pending request from that reply. This is the ONLY way to approve; set
+    AIPM_MESSAGE_APPROVAL=0 only to disable it entirely (proposals then just
+    accumulate, unapproved). The legacy AIPM_EMAIL_APPROVAL name is still
+    honored as a fallback.
     """
     raw = os.environ.get("AIPM_MESSAGE_APPROVAL")
     if raw is None:

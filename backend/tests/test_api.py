@@ -193,51 +193,6 @@ def test_extract_unknown_source_event_is_404(client):
     assert response.status_code == 404
 
 
-def test_proposals_then_approve_applies_to_state(client):
-    raw = "The vendor API access is delayed again."
-    client.post("/events", json=_raw_event("raw_1", raw))
-    _use_provider(
-        ExtractionResult(
-            deltas=[
-                ProposedDelta(
-                    "create", "Risk", "vendor-delay",
-                    {"severity": "high", "status": "open"},
-                    source_span="The vendor API access is delayed again",
-                )
-            ],
-            actions=[
-                ProposedAction(
-                    "escalate_to_management", "consequential", {"to": "director"},
-                    source_span="The vendor API access is delayed again",
-                )
-            ],
-        )
-    )
-
-    proposal = client.post("/extract", json={"source_event_id": "raw_1"}).json()["proposal"]
-    proposal_id = proposal["id"]
-    assert proposal["payload"]["actions"][0]["category"] == "consequential"
-
-    pending = client.get("/proposals").json()
-    assert [p["id"] for p in pending] == [proposal_id]
-
-    approve = client.post(f"/proposals/{proposal_id}/approve")
-    assert approve.status_code == 201
-    assert approve.json()["payload"]["approves"] == proposal_id
-
-    state = client.get("/state").json()
-    assert state["Risk"]["vendor-delay"]["fields"]["severity"] == "high"
-    assert len(state["actions"]) == 1
-    assert state["actions"][0]["category"] == "consequential"
-
-    # approving a consequential action logs its (stubbed) outbound event
-    events = client.get("/events").json()
-    assert any(e["type"] == "report_to_management" for e in events)
-
-    # once approved it no longer shows as pending
-    assert client.get("/proposals").json() == []
-
-
 def test_extract_auto_executes_info_request_actions(client):
     raw = "Bob mentioned the vendor API access is delayed again."
     client.post("/events", json=_raw_event("raw_1", raw))
@@ -327,10 +282,6 @@ def test_extract_detects_deadline_regression(client):
     assert body["conflicts"][0]["entity_id"] == "sprint-end"
 
 
-def test_approve_unknown_proposal_is_404(client):
-    assert client.post("/proposals/nope/approve").status_code == 404
-
-
 # --- /review-state ------------------------------------------------------------
 
 
@@ -407,18 +358,30 @@ def test_review_state_high_risk_no_owner_creates_proposal(client):
     assert any(p["id"] == proposal["id"] for p in pending)
 
 
-def test_review_state_proposal_can_be_approved(client):
+def test_review_state_proposal_approved_by_reply_raises_flag(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Helios", "pm": "pm@helios.com"})
     client.post("/events", json=_human_approval(
         "evt_1",
         _delta("create", "Risk", "vendor-delay", {"severity": "high", "status": "open"}),
     ))
 
-    proposal_id = client.post("/review-state").json()["proposal"]["id"]
-    approve = client.post(f"/proposals/{proposal_id}/approve")
-    assert approve.status_code == 201
+    proposal = client.post("/review-state").json()["proposal"]
+    proposal_id = proposal["id"]
 
-    events = client.get("/events").json()
-    assert any(e["type"] == "flag_raised" for e in events)
+    # the PM approves by replying on the proposal's thread
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "approve", "go ahead")]),
+    )
+    client.post("/events", json={
+        "id": "reply_1", "type": "message_received", "timestamp": "2025-01-02T00:00:00Z",
+        "source": "pm@helios.com", "raw_text": "Yes, raise it.",
+        "payload": {"thread_id": proposal["payload"]["thread_id"]},
+    })
+
+    assert any(e["type"] == "flag_raised" for e in client.get("/events").json())
+    assert client.get("/proposals").json() == []
 
 
 # --- project definition --------------------------------------------------------
@@ -634,10 +597,12 @@ def test_email_reply_with_no_pending_proposals_is_noop(client, monkeypatch):
     assert reply.json()["approvals"] is None
 
 
-def test_email_approval_off_requires_explicit_approve(client, monkeypatch):
+def test_message_approval_off_ignores_reply(client, monkeypatch):
     monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
     proposal_id = _pending_consequential_proposal(client)
 
+    # With reply-approval disabled, a reply does nothing -- the proposal just
+    # stays pending (there is no other way to approve).
     monkeypatch.setenv("AIPM_EMAIL_APPROVAL", "0")
     _use_auto_provider(
         ExtractionResult(),

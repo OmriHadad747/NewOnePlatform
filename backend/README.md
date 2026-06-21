@@ -55,11 +55,16 @@ model mutate state directly:
   for the human reviewer. Conflicts are advisory only -- never block.
 - `GET /proposals` -- the `agent_proposal` events that have no matching
   approval yet.
-- `POST /proposals/{id}/approve` -- writes a `human_approval` event carrying
-  the proposal's `deltas`/`actions` (and `approves: <id>`). This is validated
-  against current state and then applied -- the one place text becomes fact.
-  Each approved (`consequential`) action then executes (stub) and is logged
-  as a `ticket_opened`/`flag_raised`/`report_to_management` event.
+
+Approval is not an endpoint: a human approves by REPLYING on the thread (a
+`message_received` the agent resolves against the pending proposal). That reply
+path writes a `human_approval` carrying the proposal's `deltas`/`actions` (and
+`approves: <id>`), validated against current state and applied -- the one place
+text becomes fact. Each approved (`consequential`) action then executes (stub)
+and is logged as a `ticket_opened`/`flag_raised`/`report_to_management` event.
+If applying would leave the state inconsistent (e.g. a task done while it keeps
+an active dependency), the agent gates first and records the human's explicit
+acknowledgment instead of committing it silently.
 
 The pure parts of extraction (prompt, schema, span-grounding, provider
 protocol, routing policy, action-to-outbound-event mapping) live in

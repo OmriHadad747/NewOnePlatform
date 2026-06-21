@@ -141,3 +141,25 @@ def test_prompt_documents_amend_decision():
     prompt = build_approval_prompt("almost done", _pending())
     assert "amend" in prompt.prefix
     assert "amended_status" in prompt.prefix
+
+
+def test_apply_only_reads_and_round_trips():
+    result = ApprovalResult.from_dict(
+        {"resolutions": [
+            {"proposal_id": "p", "decision": "approve", "apply_only": ["task-done"]}
+        ]}
+    )
+    assert result.resolutions[0].apply_only == ["task-done"]
+    assert ApprovalResult.from_dict(result.to_dict()).to_dict() == result.to_dict()
+
+
+def test_apply_only_defaults_empty():
+    result = ApprovalResult.from_dict(
+        {"resolutions": [{"proposal_id": "p", "decision": "approve"}]}
+    )
+    assert result.resolutions[0].apply_only == []
+
+
+def test_prompt_documents_partial_approval():
+    prompt = build_approval_prompt("yes it's done, but keep that dependency", _pending())
+    assert "apply_only" in prompt.prefix

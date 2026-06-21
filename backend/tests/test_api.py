@@ -1490,6 +1490,131 @@ def test_revise_reply_proposes_model_revision_to_pm(client, monkeypatch):
     assert client.get("/proposals").json() == []
 
 
+def _reach_pending_revision(client):
+    """Drive the flow to a pending model_revision (delete dep1 + mark task done).
+
+    Returns (revision_id, revision_thread_id). The contradiction was raised by
+    dana@helios.com; the revision is routed to the PM.
+    """
+    client.post("/project", json={"name": "Helios", "pm": "pm@helios.com"})
+    client.post("/events", json={
+        "id": "evt_setup", "type": "human_approval", "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {"deltas": [
+            _delta("create", "Task", "upstream", {"status": "in_progress"}),
+            _delta("create", "Task", "downstream", {"title": "Downstream", "status": "open"}),
+            _delta("create", "Dependency", "dep1",
+                   {"from_entity_id": "downstream", "to_entity_id": "upstream", "status": "active"}),
+        ], "actions": []},
+    })
+
+    _use_auto_provider(ExtractionResult(deltas=[
+        ProposedDelta("update", "Task", "downstream", {"status": "done"}, source_span="downstream is done"),
+    ]))
+    resp = client.post("/events", json={
+        "id": "raw_1", "type": "manual_note", "timestamp": "2025-02-03T09:00:00Z",
+        "source": "dana@helios.com", "raw_text": "downstream is done", "payload": {},
+    })
+    original_id = resp.json()["extraction"]["proposal"]["id"]
+
+    _use_auto_provider(
+        ExtractionResult(deltas=[
+            ProposedDelta("delete", "Dependency", "dep1", {}, source_span="it never depended on upstream"),
+            ProposedDelta("update", "Task", "downstream", {"status": "done"}, source_span="genuinely done"),
+        ]),
+        ApprovalResult([ApprovalResolution(original_id, "revise", reason_span="it never depended on upstream")]),
+    )
+    reply = client.post("/events", json={
+        "id": "raw_2", "type": "message_received", "timestamp": "2025-02-03T10:00:00Z",
+        "source": "dana@helios.com",
+        "raw_text": "It's genuinely done -- it never depended on upstream.",
+        "payload": {"thread_id": _thread_of(client, original_id)},
+    })
+    revision_id = reply.json()["approvals"]["revised"][0]["proposal_id"]
+    return revision_id, _thread_of(client, revision_id)
+
+
+def _outcome_messages_to(client, recipient):
+    """revision-outcome (closure) messages sent to a given person."""
+    return [
+        e for e in client.get("/events").json()
+        if e["type"] == "message_sent"
+        and e["source"] == "agent:revision-outcome"
+        and e["payload"]["payload"].get("to") == recipient
+    ]
+
+
+def test_rejected_revision_closes_loop_with_author(client, monkeypatch):
+    """PM declines the revision -> nothing applied, and the author is told why."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    revision_id, revtid = _reach_pending_revision(client)
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(revision_id, "reject",
+                                           reason_span="that dependency is real")]),
+    )
+    client.post("/events", json={
+        "id": "raw_3", "type": "message_received", "timestamp": "2025-02-03T11:00:00Z",
+        "source": "pm@helios.com", "raw_text": "No, that dependency is real -- don't remove it.",
+        "payload": {"thread_id": revtid},
+    })
+
+    # Nothing applied: the model stands.
+    state = client.get("/state").json()
+    assert "dep1" in state["Dependency"]
+    assert state["Task"]["downstream"]["fields"]["status"] == "open"
+    assert client.get("/proposals").json() == []
+
+    # The author who raised it gets closure, with the PM's reason.
+    msgs = _outcome_messages_to(client, "dana@helios.com")
+    assert len(msgs) == 1
+    body = msgs[0]["payload"]["payload"]["body"]
+    assert "keep the existing model" in body
+    assert "that dependency is real" in body
+    assert "send a new note" in body  # invited to re-raise -> not a dead end
+
+
+def test_partial_approval_keeps_dependency_but_records_done(client, monkeypatch):
+    """PM: 'the dependency is real, but yes it's done' -> apply only the status."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    revision_id, revtid = _reach_pending_revision(client)
+
+    # apply_only the task status change; drop the structural delete.
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(
+            revision_id, "approve", reason_span="the dependency is real but it is done",
+            apply_only=["downstream"],
+        )]),
+    )
+    client.post("/events", json={
+        "id": "raw_3", "type": "message_received", "timestamp": "2025-02-03T11:00:00Z",
+        "source": "pm@helios.com",
+        "raw_text": "The dependency is real, keep it -- but yes, downstream is done.",
+        "payload": {"thread_id": revtid},
+    })
+
+    state = client.get("/state").json()
+    # the done status WAS applied...
+    assert state["Task"]["downstream"]["fields"]["status"] == "done"
+    # ...but the dependency was NOT deleted (the PM kept it).
+    assert "dep1" in state["Dependency"]
+    assert client.get("/proposals").json() == []
+
+    # The human_approval recorded only the applied subset, flagged partial.
+    approvals = [e for e in client.get("/events").json()
+                 if e["type"] == "human_approval" and e["payload"].get("approves") == revision_id]
+    assert approvals and approvals[0]["payload"].get("partial") is True
+    assert [d["entity_id"] for d in approvals[0]["payload"]["deltas"]] == ["downstream"]
+
+    # The author is told what was applied vs. kept.
+    msgs = _outcome_messages_to(client, "dana@helios.com")
+    assert len(msgs) == 1
+    body = msgs[0]["payload"]["payload"]["body"]
+    assert "Dependency 'dep1'" in body  # the kept (declined) structural change
+
+
 def _thread_of(client, proposal_id):
     """Find the thread_id the agent opened for a given proposal."""
     for e in client.get("/events").json():

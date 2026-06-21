@@ -59,6 +59,12 @@ Rules:
   use "defer" for it.
 - Judge each pending request independently: one reply may approve one request,
   reject another, and not address a third.
+- A single request may BUNDLE several distinct changes, each shown with a
+  [handle] in brackets inside that request. If the reply authorizes only SOME of
+  them ("yes it's done, but keep that dependency"), use decision "approve" and
+  set "apply_only" to the list of [handle]s the reply actually authorizes --
+  omit the ones it declines. Leave "apply_only" empty ([]) to authorize the
+  whole request (the normal case).
 - Only reference proposal ids from the PENDING REQUESTS list. Never invent ids.
 
 Output STRICT JSON, no prose, in exactly this shape:
@@ -68,6 +74,7 @@ Output STRICT JSON, no prose, in exactly this shape:
       "proposal_id": "<one of the pending ids>",
       "decision": "approve" | "reject" | "amend" | "revise" | "defer",
       "amended_status": "<truthful status when decision is amend, else empty>",
+      "apply_only": ["<change handle>", ...],
       "reason_span": "<short verbatim quote from the reply, or empty string>"
     }
   ]
@@ -93,6 +100,10 @@ class ApprovalResolution:
     # take when the reply confirms a status change is only PARTIALLY true (e.g.
     # "almost done, a piece is left"). Empty otherwise.
     amended_status: str = ""
+    # Set only when decision == "approve" AND the reply authorizes a subset of a
+    # bundled request: the change handles (entity ids) to apply. Empty means
+    # apply the whole proposal -- the normal, backward-compatible case.
+    apply_only: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -114,6 +125,7 @@ class ApprovalResult:
                     decision=(r.get("decision") or "defer"),
                     reason_span=(r.get("reason_span") or ""),
                     amended_status=(r.get("amended_status") or ""),
+                    apply_only=list(r.get("apply_only") or []),
                 )
                 for r in data.get("resolutions", [])
             ]
@@ -127,6 +139,7 @@ class ApprovalResult:
                     "decision": r.decision,
                     "reason_span": r.reason_span,
                     "amended_status": r.amended_status,
+                    "apply_only": r.apply_only,
                 }
                 for r in self.resolutions
             ]

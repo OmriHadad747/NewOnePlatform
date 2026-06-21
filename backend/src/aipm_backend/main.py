@@ -232,19 +232,32 @@ def _ask_author_to_clarify(
     )
 
 
-def _apply_approval(proposal: Event, events: list[Event], source: str) -> Event:
+def _apply_approval(
+    proposal: Event, events: list[Event], source: str, apply_only: list[str] | None = None
+) -> Event:
     """Write a human_approval that applies a proposal's deltas/actions to state,
     then execute (stub) its consequential actions. Shared by the explicit
-    approve endpoint and the email-reply approval path."""
+    approve endpoint and the email-reply approval path.
+
+    `apply_only` (a list of entity ids) authorizes a SUBSET of a bundled
+    proposal's deltas -- the human approved some changes and declined others
+    (e.g. "yes it's done, but keep that dependency"). Empty/None applies the
+    whole proposal, the normal case. The deltas it drops are simply not applied;
+    the human_approval records exactly what was applied.
+    """
+    deltas = proposal.payload.get("deltas", [])
+    if apply_only:
+        deltas = [d for d in deltas if d.get("entity_id") in apply_only]
     approval = Event(
         id=f"appr_{uuid.uuid4().hex[:12]}",
         type="human_approval",
         timestamp=_now(),
         source=source,
         payload={
-            "deltas": proposal.payload.get("deltas", []),
+            "deltas": deltas,
             "actions": proposal.payload.get("actions", []),
             "approves": proposal.id,
+            **({"partial": True} if apply_only else {}),
         },
     )
 
@@ -325,15 +338,18 @@ def _approve_ticket_batch(batch: Event, source: str) -> dict:
     return {"approval": asdict(approval), "fanned_out": fanned}
 
 
-def _resolve_proposal_approval(proposal: Event, events: list[Event], source: str):
+def _resolve_proposal_approval(
+    proposal: Event, events: list[Event], source: str, apply_only: list[str] | None = None
+):
     """Approve a proposal: fan out if it's a ticket batch, else apply it.
 
     Returns the human_approval Event for a normal approval, or a fan-out dict
-    `{approval, fanned_out}` for a ticket batch.
+    `{approval, fanned_out}` for a ticket batch. `apply_only` authorizes a subset
+    of a bundled proposal's deltas (ignored for ticket batches, which fan out).
     """
     if _is_ticket_batch(proposal):
         return _approve_ticket_batch(proposal, source)
-    return _apply_approval(proposal, events, source)
+    return _apply_approval(proposal, events, source, apply_only=apply_only)
 
 
 def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
@@ -446,6 +462,10 @@ def _propose_model_revision(
             "source_event_id": reply.id,
             "provider": provider.name,
             "thread_id": thread_id,
+            # Who flagged the contradiction, and the thread they're reachable on,
+            # so we can close the loop with them once the PM decides.
+            "raised_by": reply.source,
+            "raised_thread_id": original.payload.get("thread_id"),
             # No "approver": routes to the PM, the owner of the project model.
         },
     )
@@ -460,6 +480,86 @@ def _propose_model_revision(
         "summary": _summarize_proposal_payload(proposal.payload),
         "request": request,
     }
+
+
+def _describe_deltas(deltas: list[dict]) -> str:
+    """Plain-words description of a set of deltas, for a message to a human."""
+    parts: list[str] = []
+    for d in deltas:
+        f = d.get("fields", {})
+        label = f.get("title") or f.get("description") or f.get("name") or d.get("entity_id")
+        parts.append(f"{d.get('op')} {d.get('entity_type')} '{label}'")
+    return "; ".join(parts)
+
+
+def _notify_revision_outcome(revision: Event, applied_ids: list[str], reason: str) -> dict | None:
+    """Close the loop with whoever raised a contradiction, once the PM has ruled.
+
+    Splits the revision's deltas into what was applied vs. dropped and tells the
+    original author which way it went and why. Sent on the author's existing
+    thread; invites a fresh note (which re-enters extraction) if they still
+    disagree -- so a declined correction is never a silent dead end.
+    """
+    raised_by = revision.payload.get("raised_by")
+    if not raised_by:
+        return None
+    deltas = revision.payload.get("deltas", [])
+    applied = [d for d in deltas if d.get("entity_id") in applied_ids]
+    dropped = [d for d in deltas if d.get("entity_id") not in applied_ids]
+    thread_id = revision.payload.get("raised_thread_id")
+
+    if not dropped:  # fully applied -- a clean confirmation back to the author
+        body = (
+            f"Thanks for flagging this -- I've corrected the model as you described: "
+            f"{_describe_deltas(applied)}."
+        )
+    else:
+        kept = f"I applied: {_describe_deltas(applied)}. " if applied else ""
+        why = reason.strip().rstrip(".") if reason else ""
+        body = (
+            f"I raised your correction with the project manager. {kept}"
+            f"They decided to keep the existing model on: {_describe_deltas(dropped)}"
+            + (f" -- {why}." if why else ".")
+            + " If you still think that's wrong, send a new note and I'll take another look."
+        )
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": raised_by,
+            "subject": "Update on the correction you flagged",
+            "body": body,
+            "proposal_id": revision.id,
+            "thread_id": thread_id,
+        },
+    }
+    return _write_outbound_event(
+        action, source="agent:revision-outcome", source_event_id=revision.id, thread_id=thread_id
+    )
+
+
+def _close_revision_loop(revision: Event, applied_ids: list[str], reason: str) -> dict | None:
+    """Notify the author iff this proposal is a model_revision; else a no-op."""
+    if revision.payload.get("kind") != "model_revision":
+        return None
+    return _notify_revision_outcome(revision, applied_ids, reason)
+
+
+def _resolver_summary(payload: dict) -> str:
+    """Like `_summarize_proposal_payload`, but tags each change with its entity-id
+    [handle] so the resolver can authorize a subset via `apply_only`. Used only
+    for the model's view; the human-facing approval emails stay clean."""
+    parts: list[str] = []
+    for action in payload.get("actions", []):
+        ap = action.get("payload", {})
+        label = ap.get("title") or ap.get("subject") or ap.get("reason") or action.get("type")
+        handle = ap.get("entity_id") or ap.get("task_id") or action.get("type")
+        parts.append(f"[{handle}] {action.get('type')} ({label})")
+    for delta in payload.get("deltas", []):
+        f = delta.get("fields", {})
+        label = f.get("title") or f.get("description") or f.get("name") or delta.get("entity_id")
+        parts.append(f"[{delta.get('entity_id')}] {delta.get('op')} {delta.get('entity_type')} '{label}'")
+    return "; ".join(parts) if parts else "(empty proposal)"
 
 
 def _has_approval_request(proposal_id: str, events: list[Event]) -> bool:
@@ -620,7 +720,7 @@ def _resolve_approvals_from_reply(
 
     prompt = build_approval_prompt(
         reply.raw_text,
-        [PendingProposal(id=p.id, summary=_summarize_proposal_payload(p.payload)) for p in pending],
+        [PendingProposal(id=p.id, summary=_resolver_summary(p.payload)) for p in pending],
     )
     result = provider.resolve_approvals(prompt)
 
@@ -637,17 +737,25 @@ def _resolve_approvals_from_reply(
             continue
         if res.decision == "approve":
             outcome = _resolve_proposal_approval(
-                target, storage.read_events(), source=f"email:{reply.source}"
+                target, storage.read_events(), source=f"email:{reply.source}",
+                apply_only=res.apply_only,
             )
             if isinstance(outcome, dict):  # ticket batch -> fanned out to owners
                 approved.append(outcome["approval"])
                 fanned_out.extend(outcome["fanned_out"])
             else:
                 approved.append(asdict(outcome))
+                # Close the loop with whoever raised a model revision: tell them
+                # what the PM applied vs. kept (a partial approve drops some).
+                all_ids = [d.get("entity_id") for d in target.payload.get("deltas", [])]
+                applied_ids = res.apply_only or all_ids
+                _close_revision_loop(target, applied_ids, res.reason_span)
             resolved_ids.add(res.proposal_id)
         elif res.decision == "reject":
             rejection = _reject_proposal(target, source=f"email:{reply.source}", reason=res.reason_span)
             rejected.append(asdict(rejection))
+            # A declined revision is not a dead end: let the author know why.
+            _close_revision_loop(target, applied_ids=[], reason=res.reason_span)
             resolved_ids.add(res.proposal_id)
         elif res.decision == "amend" and res.amended_status:
             amendment = _apply_amendment(

@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 class ProposedDelta:
     """A proposed create/update against an entity table."""
 
-    op: str  # "create" | "update"
+    op: str  # "create" | "update" | "delete"
     entity_type: str
     entity_id: str
     fields: dict
@@ -80,10 +80,35 @@ class ExtractionResult:
 
     @classmethod
     def from_dict(cls, data: dict) -> ExtractionResult:
-        """Build a result from a provider's parsed JSON output."""
+        """Build a result from a provider's parsed JSON output.
+
+        Tolerant of the shapes a model actually emits: a `delete` delta carries no
+        `fields` (there's nothing to set), and a provider may omit `confidence`.
+        We fill those defaults rather than require every key, and ignore any
+        extra keys the model adds.
+        """
         return cls(
-            deltas=[ProposedDelta(**d) for d in data.get("deltas", [])],
-            actions=[ProposedAction(**a) for a in data.get("actions", [])],
+            deltas=[
+                ProposedDelta(
+                    op=d["op"],
+                    entity_type=d["entity_type"],
+                    entity_id=d["entity_id"],
+                    fields=d.get("fields") or {},
+                    source_span=d.get("source_span", ""),
+                    confidence=d.get("confidence", 1.0),
+                )
+                for d in data.get("deltas", [])
+            ],
+            actions=[
+                ProposedAction(
+                    type=a["type"],
+                    category=a["category"],
+                    payload=a.get("payload") or {},
+                    source_span=a.get("source_span", ""),
+                    confidence=a.get("confidence", 1.0),
+                )
+                for a in data.get("actions", [])
+            ],
         )
 
     def to_dict(self) -> dict:

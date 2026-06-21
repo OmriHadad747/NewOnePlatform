@@ -23,7 +23,7 @@ from aipm.state import ProjectState
 # agent sent/opened/raised.
 STATE_CHANGING_EVENT_TYPES = {"human_approval"}
 
-DELTA_OPS = {"create", "update"}
+DELTA_OPS = {"create", "update", "delete"}
 
 
 class ProjectionError(Exception):
@@ -74,7 +74,7 @@ def apply_delta(state: ProjectState, delta: dict, event: Event) -> None:
                 f"{event.id}: cannot create {entity_type} {entity_id!r}, already exists"
             )
         table[entity_id] = Entity(entity_type, entity_id, dict(fields), [provenance])
-    else:  # update
+    elif op == "update":
         if entity_id not in table:
             raise ProjectionError(
                 f"{event.id}: cannot update {entity_type} {entity_id!r}, does not exist"
@@ -82,6 +82,14 @@ def apply_delta(state: ProjectState, delta: dict, event: Event) -> None:
         entity = table[entity_id]
         entity.fields.update(fields)
         entity.history.append(provenance)
+    else:  # delete -- remove an entity the model now knows was mis-modeled
+        # (e.g. a Dependency that should never have existed). The delete is still
+        # an event in the log: state stays derived, and the removal is auditable.
+        if entity_id not in table:
+            raise ProjectionError(
+                f"{event.id}: cannot delete {entity_type} {entity_id!r}, does not exist"
+            )
+        del table[entity_id]
 
 
 def _build_provenance(delta: dict, fields: dict, event: Event) -> ProvenanceRecord:

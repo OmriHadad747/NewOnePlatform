@@ -143,6 +143,46 @@ def test_update_on_missing_entity_raises():
         project(events)
 
 
+def test_delete_removes_entity():
+    events = [
+        _human_approval(
+            "evt_1",
+            _delta(
+                "create", "Dependency", "dep1",
+                {"from_entity_id": "a", "to_entity_id": "b", "status": "active"},
+            ),
+        ),
+        _human_approval(
+            "evt_2",
+            _delta("delete", "Dependency", "dep1", {}),
+        ),
+    ]
+
+    state = project(events)
+    assert "dep1" not in state.entities["Dependency"]
+
+
+def test_delete_on_missing_entity_raises():
+    events = [
+        _human_approval("evt_1", _delta("delete", "Task", "ghost", {})),
+    ]
+
+    with pytest.raises(ProjectionError, match="cannot delete"):
+        project(events)
+
+
+def test_delete_then_recreate_is_allowed():
+    """A delete clears the id, so a later create of the same id is not a clash."""
+    events = [
+        _human_approval("evt_1", _delta("create", "Task", "t1", {"status": "open"})),
+        _human_approval("evt_2", _delta("delete", "Task", "t1", {})),
+        _human_approval("evt_3", _delta("create", "Task", "t1", {"status": "done"})),
+    ]
+
+    state = project(events)
+    assert state.entities["Task"]["t1"].fields["status"] == "done"
+
+
 def test_delta_without_asserted_by_raises():
     events = [
         Event(

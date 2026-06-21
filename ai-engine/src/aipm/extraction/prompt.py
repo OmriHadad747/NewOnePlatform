@@ -33,6 +33,15 @@ Rules:
   exactly from the raw event text that justifies it. Do not paraphrase.
 - Use `create` for a new entity, `update` to change an existing one (look at
   the current state to tell which, and to reuse existing entity ids).
+- Use `delete` ONLY to remove an entity that the raw text shows was modeled
+  wrongly and should not exist -- most often a `Dependency` you now know is not
+  real (e.g. "X doesn't actually depend on Y"). A `delete` delta needs just
+  `op`, `entity_type`, `entity_id`, and a `source_span`; no `fields`. Never
+  delete an entity that isn't in the current state.
+- New information can contradict the recorded model, not just add to it. If the
+  text implies an existing dependency, owner, or fact is wrong, propose the
+  correction (an `update`, or a `delete` of the bad relationship) rather than
+  ignoring it -- a human still approves it.
 - Keep entity ids short, lowercase, hyphenated, and stable across events.
 - Model each concrete piece of work as a `Task` with a single `owner`. Reuse the
   same task id across events. Do NOT model work only as `Owner` entities.
@@ -56,7 +65,7 @@ Output STRICT JSON, no prose, in exactly this shape:
 {
   "deltas": [
     {
-      "op": "create" | "update",
+      "op": "create" | "update" | "delete",
       "entity_type": <one of the entity types below>,
       "entity_id": "<short-stable-id>",
       "fields": { ... },

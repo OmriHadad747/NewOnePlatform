@@ -46,6 +46,14 @@ Rules:
   would record an untrue "done". Instead set "amended_status" to the truthful
   status the entity should take now -- "in_progress" when work continues,
   "blocked" when it is waiting on something else.
+- Use "revise" when the reply reveals the recorded MODEL ITSELF is wrong -- not
+  that the work is partly done, but that a relationship or fact was captured
+  incorrectly and needs restructuring. Typically: a dependency that should not
+  exist ("that task doesn't actually depend on this one", "the blocker isn't
+  real -- it only matters later"), or an entity wired up wrongly. A status change
+  cannot fix this, so do NOT "amend" it; set "revise" and let the agent draft a
+  structural correction for the project manager to approve. Put the contradiction
+  in "reason_span".
 - Use "defer" when the reply does not address that request. Answering a
   question, confirming a fact, or adding new information is NOT approval --
   use "defer" for it.
@@ -58,7 +66,7 @@ Output STRICT JSON, no prose, in exactly this shape:
   "resolutions": [
     {
       "proposal_id": "<one of the pending ids>",
-      "decision": "approve" | "reject" | "amend" | "defer",
+      "decision": "approve" | "reject" | "amend" | "revise" | "defer",
       "amended_status": "<truthful status when decision is amend, else empty>",
       "reason_span": "<short verbatim quote from the reply, or empty string>"
     }
@@ -79,7 +87,7 @@ class PendingProposal:
 @dataclass
 class ApprovalResolution:
     proposal_id: str
-    decision: str  # "approve" | "reject" | "amend" | "defer"
+    decision: str  # "approve" | "reject" | "amend" | "revise" | "defer"
     reason_span: str = ""
     # Set only when decision == "amend": the truthful status the entity should
     # take when the reply confirms a status change is only PARTIALLY true (e.g.

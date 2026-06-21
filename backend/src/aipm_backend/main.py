@@ -60,6 +60,7 @@ from aipm.extraction import build_prompt, filter_grounded
 from aipm.extraction.providers import ExtractionProvider
 from aipm.projection import ProjectionError, apply_event, project
 from aipm.review import review_state as _review_state
+from aipm.revision import build_revision_prompt
 from aipm.schema import normalize_payload
 
 from aipm_backend import config, storage
@@ -374,6 +375,93 @@ def _apply_amendment(proposal: Event, amended_status: str, source: str) -> Event
     return approval
 
 
+def _ask_for_revision_approval(proposal: Event, events: list[Event]) -> dict:
+    """Ask the PM to approve a structural correction the agent now believes is right.
+
+    Unlike a routine approval, this is the agent admitting its own model was
+    wrong: it leads with the contradiction (`rationale`) and proposes the fix.
+    No `approver` is set on a revision, so `_approval_recipient` routes it to the
+    project manager -- the owner of the project model -- not the author.
+    """
+    summary = _summarize_proposal_payload(proposal.payload)
+    rationale = proposal.payload.get("rationale", "")
+    thread_id = proposal.payload.get("thread_id")
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": _approval_recipient(events, proposal.payload),
+            "subject": f"I think I modeled this wrong -- proposed correction: {summary[:50]}",
+            "body": (
+                "New information suggests the project model I recorded is wrong"
+                + (f": {rationale} " if rationale else ". ")
+                + f"I'd like to correct it: {summary}. Reply to approve or decline."
+            ),
+            "proposal_id": proposal.id,
+            "thread_id": thread_id,
+        },
+    }
+    return _write_outbound_event(
+        action, source="agent:approval-request", source_event_id=proposal.id, thread_id=thread_id
+    )
+
+
+def _propose_model_revision(
+    original: Event, reply: Event, provider: ExtractionProvider, events: list[Event], reason: str
+) -> dict | None:
+    """Draft a structural correction from a reply that contradicts the model.
+
+    The resolver flagged this reply as `revise`: it says the recorded model
+    itself is wrong (a dependency that shouldn't exist, a fact wired up wrongly),
+    which no status change can fix. We ask the model for corrective deltas
+    (`create`/`update`/`delete`) grounded in the reply, wrap them in a
+    `model_revision` proposal routed to the PM, and supersede the original.
+    Returns a summary dict, or None if no concrete correction could be drafted.
+    """
+    state = project(events)
+    original_summary = _summarize_proposal_payload(original.payload)
+    prompt = build_revision_prompt(reply.raw_text, original_summary, state)
+    result = provider.extract(prompt)  # same JSON shape as extraction
+
+    grounded, _dropped = filter_grounded(result, reply.raw_text)
+    payload = normalize_payload(grounded.to_payload(asserted_by=f"{provider.name}:revision"))
+    # Only keep deltas we can actually apply (delete/update need the entity to
+    # exist); a revision that reconciles to nothing is not worth bothering the PM.
+    payload["deltas"], _unclear = _unapplicable_deltas(payload["deltas"], state)
+    if not payload["deltas"]:
+        return None
+
+    thread_id = _new_thread_id()
+    proposal = Event(
+        id=f"prop_{uuid.uuid4().hex[:12]}",
+        type="agent_proposal",
+        timestamp=_now(),
+        source=f"revision:{provider.name}",
+        payload={
+            "deltas": payload["deltas"],
+            "actions": [],  # a revision only corrects state; it takes no side-effects
+            "kind": "model_revision",
+            "supersedes": original.id,
+            "rationale": reason,
+            "source_event_id": reply.id,
+            "provider": provider.name,
+            "thread_id": thread_id,
+            # No "approver": routes to the PM, the owner of the project model.
+        },
+    )
+    storage.write_event(proposal)
+    # The original claim was based on the now-corrected model; retire it so it
+    # leaves the pending set, pointing at the revision that replaces it.
+    _reject_proposal(original, source=f"email:{reply.source}", reason=f"superseded by revision {proposal.id}")
+    request = _ask_for_revision_approval(proposal, storage.read_events())
+    return {
+        "proposal_id": proposal.id,
+        "supersedes": original.id,
+        "summary": _summarize_proposal_payload(proposal.payload),
+        "request": request,
+    }
+
+
 def _has_approval_request(proposal_id: str, events: list[Event]) -> bool:
     """True if an approval-request message was already sent for this proposal."""
     return any(
@@ -540,6 +628,7 @@ def _resolve_approvals_from_reply(
     approved: list[dict] = []
     rejected: list[dict] = []
     amended: list[dict] = []
+    revised: list[dict] = []
     fanned_out: list[dict] = []
     resolved_ids: set[str] = set()
     for res in result.resolutions:
@@ -566,6 +655,16 @@ def _resolve_approvals_from_reply(
             )
             amended.append(asdict(amendment))
             resolved_ids.add(res.proposal_id)
+        elif res.decision == "revise":
+            # The reply says the model itself is wrong: draft a structural
+            # correction for the PM. If we can't draft a concrete one, leave the
+            # proposal pending so the chase loop still follows up.
+            revision = _propose_model_revision(
+                target, reply, provider, storage.read_events(), reason=res.reason_span
+            )
+            if revision is not None:
+                revised.append(revision)
+                resolved_ids.add(res.proposal_id)
         # "defer" leaves the proposal pending -- handled by the chase loop below.
 
     # Chase the proposals this reply ignored. On a thread, try a short
@@ -627,6 +726,7 @@ def _resolve_approvals_from_reply(
         "approved": approved,
         "rejected": rejected,
         "amended": amended,
+        "revised": revised,
         "fanned_out": fanned_out,
         "composed": composed,
         "nudged": nudged,
@@ -638,17 +738,17 @@ def _resolve_approvals_from_reply(
 def _unapplicable_deltas(deltas: list[dict], state) -> tuple[list[dict], list[tuple[dict, str]]]:
     """Split deltas into (applicable, unclear) against current state.
 
-    Unclear = the model referenced something we can't reconcile: an `update` to
-    an entity that doesn't exist, or a `create` of one that already does. Rather
-    than let it fail at approval time (or silently drop it), we pull it out so
-    the caller can ask the author what they meant.
+    Unclear = the model referenced something we can't reconcile: an `update` or
+    `delete` of an entity that doesn't exist, or a `create` of one that already
+    does. Rather than let it fail at approval time (or silently drop it), we pull
+    it out so the caller can ask the author what they meant.
     """
     applicable: list[dict] = []
     unclear: list[tuple[dict, str]] = []
     for d in deltas:
         exists = d["entity_id"] in state.entities.get(d["entity_type"], {})
-        if d["op"] == "update" and not exists:
-            unclear.append((d, f"no {d['entity_type']} '{d['entity_id']}' exists yet to update"))
+        if d["op"] in ("update", "delete") and not exists:
+            unclear.append((d, f"no {d['entity_type']} '{d['entity_id']}' exists yet to {d['op']}"))
         elif d["op"] == "create" and exists:
             unclear.append((d, f"{d['entity_type']} '{d['entity_id']}' already exists"))
         else:

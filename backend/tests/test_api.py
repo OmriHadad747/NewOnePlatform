@@ -1368,6 +1368,128 @@ def test_amend_reply_records_partial_status_and_keeps_dependencies(client, monke
     assert client.get("/proposals").json() == []
 
 
+def test_revise_reply_proposes_model_revision_to_pm(client, monkeypatch):
+    """A reply that says the MODEL is wrong spawns a structural revision for the PM.
+
+    The author's reply contradicts a recorded dependency (not just a status), so
+    the resolver returns `revise`. The agent drafts a correction -- here, deleting
+    the bad dependency and marking the task done -- routed to the PM (not the
+    author), and supersedes the original claim.
+    """
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Helios", "pm": "pm@helios.com"})
+
+    # state: downstream task depends on an upstream that is still in progress
+    setup = {
+        "id": "evt_setup",
+        "type": "human_approval",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {
+            "deltas": [
+                _delta("create", "Task", "upstream", {"status": "in_progress"}),
+                _delta("create", "Task", "downstream", {"status": "open"}),
+                _delta(
+                    "create", "Dependency", "dep1",
+                    {"from_entity_id": "downstream", "to_entity_id": "upstream", "status": "active"},
+                ),
+            ],
+            "actions": [],
+        },
+    }
+    client.post("/events", json=setup)
+
+    # author claims downstream is done (the model also resolves the dependency)
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta("update", "Task", "downstream", {"status": "done"},
+                              source_span="downstream is done"),
+                ProposedDelta("update", "Dependency", "dep1", {"status": "resolved"},
+                              source_span="downstream is done"),
+            ]
+        )
+    )
+    resp = client.post(
+        "/events",
+        json={
+            "id": "raw_1", "type": "manual_note", "timestamp": "2025-02-03T09:00:00Z",
+            "source": "dana@helios.com", "raw_text": "downstream is done", "payload": {},
+        },
+    )
+    original_id = resp.json()["extraction"]["proposal"]["id"]
+
+    # author clarifies: it's genuinely done, the dependency was never real ->
+    # resolver returns `revise`, and the revision extraction deletes the dep and
+    # marks the task done.
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta("delete", "Dependency", "dep1", {},
+                              source_span="it never depended on upstream"),
+                ProposedDelta("update", "Task", "downstream", {"status": "done"},
+                              source_span="downstream is genuinely done"),
+            ]
+        ),
+        ApprovalResult([
+            ApprovalResolution(original_id, "revise", reason_span="it never depended on upstream"),
+        ]),
+    )
+    reply = client.post(
+        "/events",
+        json={
+            "id": "raw_2", "type": "message_received", "timestamp": "2025-02-03T10:00:00Z",
+            "source": "dana@helios.com",
+            "raw_text": "It's genuinely done -- it never depended on upstream, downstream is genuinely done.",
+            "payload": {"thread_id": _thread_of(client, original_id)},
+        },
+    )
+
+    approvals = reply.json()["approvals"]
+    assert len(approvals["revised"]) == 1
+    revision_id = approvals["revised"][0]["proposal_id"]
+    assert approvals["revised"][0]["supersedes"] == original_id
+
+    # The original claim is superseded; only the revision is pending now.
+    pending = client.get("/proposals").json()
+    assert [p["id"] for p in pending] == [revision_id]
+    revision = pending[0]
+    assert revision["payload"]["kind"] == "model_revision"
+    # No approver set on the revision -> it routes to the PM, not the author.
+    assert "approver" not in revision["payload"]
+
+    # The revision approval request went to the PM.
+    requests = [
+        e for e in client.get("/events").json()
+        if e["type"] == "message_sent"
+        and e["payload"]["payload"].get("proposal_id") == revision_id
+    ]
+    assert requests and requests[0]["payload"]["payload"]["to"] == "pm@helios.com"
+
+    # Nothing applied yet -- the dependency still exists, awaiting PM sign-off.
+    state = client.get("/state").json()
+    assert "dep1" in state["Dependency"]
+
+    # PM approves the revision -> the bad dependency is deleted, task marked done.
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(revision_id, "approve", "go ahead")]),
+    )
+    client.post(
+        "/events",
+        json={
+            "id": "raw_3", "type": "message_received", "timestamp": "2025-02-03T11:00:00Z",
+            "source": "pm@helios.com", "raw_text": "Approved, go ahead.",
+            "payload": {"thread_id": _thread_of(client, revision_id)},
+        },
+    )
+
+    state = client.get("/state").json()
+    assert "dep1" not in state["Dependency"]  # re-opened & corrected approved state
+    assert state["Task"]["downstream"]["fields"]["status"] == "done"
+    assert client.get("/proposals").json() == []
+
+
 def _thread_of(client, proposal_id):
     """Find the thread_id the agent opened for a given proposal."""
     for e in client.get("/events").json():

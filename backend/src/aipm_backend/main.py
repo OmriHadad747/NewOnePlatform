@@ -348,6 +348,32 @@ def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
     return event
 
 
+def _apply_amendment(proposal: Event, amended_status: str, source: str) -> Event:
+    """Record a corrected, partial outcome instead of the proposal's optimistic claim.
+
+    Used when the author clarifies that a "done" claim is only partially true:
+    we keep the truthful status (`amended_status`) on the Task(s) the proposal
+    targeted, and DROP its side-effects -- e.g. resolving dependencies -- which
+    only held if the work were really finished. Leaving those dependencies
+    active keeps the project state honest. The proposal leaves the pending set.
+    """
+    corrected = [
+        {**d, "fields": {**d.get("fields", {}), "status": amended_status}}
+        for d in proposal.payload.get("deltas", [])
+        if d.get("entity_type") == "Task"
+    ]
+    approval = Event(
+        id=f"appr_{uuid.uuid4().hex[:12]}",
+        type="human_approval",
+        timestamp=_now(),
+        source=source,
+        # No actions: the optimistic action set doesn't hold for a partial done.
+        payload={"deltas": corrected, "actions": [], "approves": proposal.id, "amended": True},
+    )
+    storage.write_event(approval)
+    return approval
+
+
 def _has_approval_request(proposal_id: str, events: list[Event]) -> bool:
     """True if an approval-request message was already sent for this proposal."""
     return any(
@@ -513,6 +539,7 @@ def _resolve_approvals_from_reply(
     by_id = {p.id: p for p in pending}
     approved: list[dict] = []
     rejected: list[dict] = []
+    amended: list[dict] = []
     fanned_out: list[dict] = []
     resolved_ids: set[str] = set()
     for res in result.resolutions:
@@ -532,6 +559,12 @@ def _resolve_approvals_from_reply(
         elif res.decision == "reject":
             rejection = _reject_proposal(target, source=f"email:{reply.source}", reason=res.reason_span)
             rejected.append(asdict(rejection))
+            resolved_ids.add(res.proposal_id)
+        elif res.decision == "amend" and res.amended_status:
+            amendment = _apply_amendment(
+                target, res.amended_status, source=f"email:{reply.source}"
+            )
+            amended.append(asdict(amendment))
             resolved_ids.add(res.proposal_id)
         # "defer" leaves the proposal pending -- handled by the chase loop below.
 
@@ -593,6 +626,7 @@ def _resolve_approvals_from_reply(
     return {
         "approved": approved,
         "rejected": rejected,
+        "amended": amended,
         "fanned_out": fanned_out,
         "composed": composed,
         "nudged": nudged,

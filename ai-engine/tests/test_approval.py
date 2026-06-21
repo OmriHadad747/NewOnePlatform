@@ -97,3 +97,47 @@ def test_roundtrips_through_dict():
 
 def test_empty_result():
     assert ApprovalResult.from_dict({}).resolutions == []
+
+
+# --- amend decision (partial / conditional status) -----------------------------
+
+
+def test_from_dict_reads_amended_status():
+    result = ApprovalResult.from_dict(
+        {
+            "resolutions": [
+                {
+                    "proposal_id": "prop_a",
+                    "decision": "amend",
+                    "amended_status": "in_progress",
+                    "reason_span": "almost done, small fix left",
+                }
+            ]
+        }
+    )
+    res = result.resolutions[0]
+    assert res.decision == "amend"
+    assert res.amended_status == "in_progress"
+    # amend is neither an approval nor a rejection
+    assert result.approved_ids() == []
+    assert result.rejected_ids() == []
+
+
+def test_amended_status_round_trips_through_to_dict():
+    result = ApprovalResult.from_dict(
+        {"resolutions": [{"proposal_id": "p", "decision": "amend", "amended_status": "blocked"}]}
+    )
+    assert result.to_dict()["resolutions"][0]["amended_status"] == "blocked"
+
+
+def test_amended_status_defaults_empty_for_non_amend():
+    result = ApprovalResult.from_dict(
+        {"resolutions": [{"proposal_id": "p", "decision": "approve"}]}
+    )
+    assert result.resolutions[0].amended_status == ""
+
+
+def test_prompt_documents_amend_decision():
+    prompt = build_approval_prompt("almost done", _pending())
+    assert "amend" in prompt.prefix
+    assert "amended_status" in prompt.prefix

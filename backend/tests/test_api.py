@@ -1291,3 +1291,86 @@ def test_clean_proposal_still_routes_to_pm(client, monkeypatch):
     ]
     assert len(asks) == 1
     assert asks[0]["payload"]["payload"]["to"] == "pm@helios.com"
+
+
+# --- amend: an author's reply records a truthful partial status ----------------
+
+
+def test_amend_reply_records_partial_status_and_keeps_dependencies(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Helios", "pm": "pm@helios.com"})
+
+    # state: a task that depends on a still-blocked upstream task
+    setup = {
+        "id": "evt_setup",
+        "type": "human_approval",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {
+            "deltas": [
+                _delta("create", "Task", "upstream", {"status": "blocked"}),
+                _delta("create", "Task", "downstream", {"status": "open"}),
+                _delta(
+                    "create", "Dependency", "dep1",
+                    {"from_entity_id": "downstream", "to_entity_id": "upstream", "status": "active"},
+                ),
+            ],
+            "actions": [],
+        },
+    }
+    client.post("/events", json=setup)
+
+    # author claims done; the model also optimistically resolves the dependency
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta("update", "Task", "downstream", {"status": "done"},
+                              source_span="downstream is done"),
+                ProposedDelta("update", "Dependency", "dep1", {"status": "resolved"},
+                              source_span="downstream is done"),
+            ]
+        )
+    )
+    resp = client.post(
+        "/events",
+        json={
+            "id": "raw_1", "type": "manual_note", "timestamp": "2025-02-03T09:00:00Z",
+            "source": "yuki@helios.com", "raw_text": "downstream is done", "payload": {},
+        },
+    )
+    proposal_id = resp.json()["extraction"]["proposal"]["id"]
+
+    # the author clarifies: not really done, a piece is left -> amend to in_progress
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([
+            ApprovalResolution(proposal_id, "amend", "almost, small fix left", amended_status="in_progress"),
+        ]),
+    )
+    reply = client.post(
+        "/events",
+        json={
+            "id": "raw_2", "type": "message_received", "timestamp": "2025-02-03T10:00:00Z",
+            "source": "yuki@helios.com", "raw_text": "Almost -- a small fix left once the pipeline clears.",
+            "payload": {"thread_id": _thread_of(client, proposal_id)},
+        },
+    )
+
+    approvals = reply.json()["approvals"]
+    assert len(approvals["amended"]) == 1
+
+    state = client.get("/state").json()
+    # the task gets the truthful partial status, NOT "done"
+    assert state["Task"]["downstream"]["fields"]["status"] == "in_progress"
+    # the dependency stays active -- the optimistic "resolved" was dropped
+    assert state["Dependency"]["dep1"]["fields"]["status"] == "active"
+    # the proposal is resolved (no longer pending)
+    assert client.get("/proposals").json() == []
+
+
+def _thread_of(client, proposal_id):
+    """Find the thread_id the agent opened for a given proposal."""
+    for e in client.get("/events").json():
+        if e["type"] == "agent_proposal" and e["id"] == proposal_id:
+            return e["payload"].get("thread_id")
+    return None

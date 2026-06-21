@@ -39,6 +39,13 @@ Rules:
   ("yes, but ...", "ok if ...", "what about ...?") is NOT approval -- defer it.
 - Use "reject" when the reply clearly declines it ("no", "don't", "hold off",
   "not yet").
+- Use "amend" when the reply confirms a status change only PARTIALLY -- the
+  work is mostly finished but a piece remains, or it cannot be fully completed
+  yet ("almost done, just a small fix left", "done except for X", "I finished
+  my part but it still depends on Y"). Do NOT "approve" such a reply: approving
+  would record an untrue "done". Instead set "amended_status" to the truthful
+  status the entity should take now -- "in_progress" when work continues,
+  "blocked" when it is waiting on something else.
 - Use "defer" when the reply does not address that request. Answering a
   question, confirming a fact, or adding new information is NOT approval --
   use "defer" for it.
@@ -51,7 +58,8 @@ Output STRICT JSON, no prose, in exactly this shape:
   "resolutions": [
     {
       "proposal_id": "<one of the pending ids>",
-      "decision": "approve" | "reject" | "defer",
+      "decision": "approve" | "reject" | "amend" | "defer",
+      "amended_status": "<truthful status when decision is amend, else empty>",
       "reason_span": "<short verbatim quote from the reply, or empty string>"
     }
   ]
@@ -71,8 +79,12 @@ class PendingProposal:
 @dataclass
 class ApprovalResolution:
     proposal_id: str
-    decision: str  # "approve" | "reject" | "defer"
+    decision: str  # "approve" | "reject" | "amend" | "defer"
     reason_span: str = ""
+    # Set only when decision == "amend": the truthful status the entity should
+    # take when the reply confirms a status change is only PARTIALLY true (e.g.
+    # "almost done, a piece is left"). Empty otherwise.
+    amended_status: str = ""
 
 
 @dataclass
@@ -93,6 +105,7 @@ class ApprovalResult:
                     proposal_id=r["proposal_id"],
                     decision=(r.get("decision") or "defer"),
                     reason_span=(r.get("reason_span") or ""),
+                    amended_status=(r.get("amended_status") or ""),
                 )
                 for r in data.get("resolutions", [])
             ]
@@ -105,6 +118,7 @@ class ApprovalResult:
                     "proposal_id": r.proposal_id,
                     "decision": r.decision,
                     "reason_span": r.reason_span,
+                    "amended_status": r.amended_status,
                 }
                 for r in self.resolutions
             ]

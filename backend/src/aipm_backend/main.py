@@ -129,7 +129,12 @@ def _summarize_proposal_payload(payload: dict) -> str:
         label = ap.get("title") or ap.get("subject") or ap.get("reason") or action.get("type")
         parts.append(f"{action.get('type')} ({label})")
     for delta in payload.get("deltas", []):
-        parts.append(f"{delta.get('op')} {delta.get('entity_type')} '{delta.get('entity_id')}'")
+        f = delta.get("fields", {})
+        # Prefer a human label (title/description/name) over the internal id, so
+        # both the human reading the request and the resolver matching a reply
+        # see plain words, not entity ids.
+        label = f.get("title") or f.get("description") or f.get("name") or delta.get("entity_id")
+        parts.append(f"{delta.get('op')} {delta.get('entity_type')} '{label}'")
     return "; ".join(parts) if parts else "(empty proposal)"
 
 

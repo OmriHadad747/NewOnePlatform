@@ -991,6 +991,23 @@ def test_owner_confirmation_opens_only_their_ticket(client, monkeypatch):
 # --- clarification on unreconcilable deltas -----------------------------------
 
 
+def test_proposal_summary_uses_human_titles_not_ids():
+    """The request summary (shown to the human and the resolver) reads in plain
+    words -- the entity's title/description -- not its internal id."""
+    from aipm_backend.main import _summarize_proposal_payload
+
+    payload = {
+        "deltas": [
+            {"op": "create", "entity_type": "Task", "entity_id": "dana-mock-data-setup",
+             "fields": {"title": "Set up mock transaction data"}},
+        ],
+        "actions": [],
+    }
+    summary = _summarize_proposal_payload(payload)
+    assert "Set up mock transaction data" in summary
+    assert "dana-mock-data-setup" not in summary
+
+
 def test_unapplicable_update_triggers_clarification(client, monkeypatch):
     monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
     # The model proposes updating a Decision that was never created.

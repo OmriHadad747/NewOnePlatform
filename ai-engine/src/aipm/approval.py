@@ -32,6 +32,11 @@ pending request, whether the reply authorizes it.
 Rules:
 - Use "approve" ONLY when the reply clearly authorizes that specific action
   (e.g. "yes, open the ticket", "go ahead", "approved", "do it", "sounds good").
+- If there is exactly ONE pending request, a clear and UNCONDITIONAL affirmative
+  reply -- "yes", "ok", "go ahead", "do it", "approved", "proceed", "ship it",
+  and the like, in any language -- approves it, even if the reply does not
+  restate the request's details. But a CONDITIONAL or questioning reply
+  ("yes, but ...", "ok if ...", "what about ...?") is NOT approval -- defer it.
 - Use "reject" when the reply clearly declines it ("no", "don't", "hold off",
   "not yet").
 - Use "defer" when the reply does not address that request. Answering a

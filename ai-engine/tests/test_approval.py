@@ -38,6 +38,14 @@ def test_summarize_empty_pending():
     assert "no pending" in summarize_pending([])
 
 
+def test_prefix_documents_single_pending_affirmative_rule():
+    # a clear unconditional yes on a single pending request should approve it
+    prefix = build_approval_prefix().lower()
+    assert "exactly one pending request" in prefix
+    assert "unconditional" in prefix
+    assert "conditional" in prefix  # ... but conditional replies still defer
+
+
 def test_prompt_defaults_today_to_current_date():
     from datetime import date
 

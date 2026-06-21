@@ -283,3 +283,70 @@ def test_author_clarifiable_empty_when_no_author_conflicts():
 
     assert author_clarifiable([]) == []
     assert author_clarifiable([ConflictWarning("project_deadline_exceeded", "x", "...")]) == []
+
+
+# --- end-state inconsistencies (the approval gate) -----------------------------
+
+
+def test_state_inconsistency_done_task_with_active_dep():
+    from aipm.conflicts import state_inconsistencies
+
+    state = _state_with(
+        Task={
+            "downstream": _entity("Task", "downstream", status="done"),
+            "upstream": _entity("Task", "upstream", status="in_progress"),
+        },
+        Dependency={
+            "dep1": _entity("Dependency", "dep1",
+                            from_entity_id="downstream", to_entity_id="upstream", status="active"),
+        },
+    )
+    warnings = state_inconsistencies(state)
+    assert [w.type for w in warnings] == ["task_done_with_open_dep"]
+    assert warnings[0].entity_id == "downstream"
+
+
+def test_state_inconsistency_clear_when_dependency_removed():
+    from aipm.conflicts import state_inconsistencies
+
+    # same as above but the dependency is gone (the coherent full-revision case)
+    state = _state_with(
+        Task={
+            "downstream": _entity("Task", "downstream", status="done"),
+            "upstream": _entity("Task", "upstream", status="in_progress"),
+        },
+        Dependency={},
+    )
+    assert state_inconsistencies(state) == []
+
+
+def test_state_inconsistency_clear_when_dependency_resolved():
+    from aipm.conflicts import state_inconsistencies
+
+    state = _state_with(
+        Task={
+            "downstream": _entity("Task", "downstream", status="done"),
+            "upstream": _entity("Task", "upstream", status="in_progress"),
+        },
+        Dependency={
+            "dep1": _entity("Dependency", "dep1",
+                            from_entity_id="downstream", to_entity_id="upstream", status="resolved"),
+        },
+    )
+    assert state_inconsistencies(state) == []
+
+
+def test_state_inconsistency_clear_when_upstream_also_done():
+    from aipm.conflicts import state_inconsistencies
+
+    state = _state_with(
+        Task={
+            "downstream": _entity("Task", "downstream", status="done"),
+            "upstream": _entity("Task", "upstream", status="done"),
+        },
+        Dependency={
+            "dep1": _entity("Dependency", "dep1",
+                            from_entity_id="downstream", to_entity_id="upstream", status="active"),
+        },
+    )
+    assert state_inconsistencies(state) == []

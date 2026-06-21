@@ -1575,12 +1575,17 @@ def test_rejected_revision_closes_loop_with_author(client, monkeypatch):
     assert "send a new note" in body  # invited to re-raise -> not a dead end
 
 
-def test_partial_approval_keeps_dependency_but_records_done(client, monkeypatch):
-    """PM: 'the dependency is real, but yes it's done' -> apply only the status."""
+def test_partial_approval_gates_on_conflict_then_applies_with_acknowledgment(client, monkeypatch):
+    """PM keeps the dependency but marks it done -> that's a contradiction.
+
+    The agent does NOT apply it silently: it gates, asks the PM to confirm, and
+    only on an explicit 'record it anyway' applies the subset -- stamping
+    acknowledged_conflicts so the accepted inconsistency is auditable.
+    """
     monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
     revision_id, revtid = _reach_pending_revision(client)
 
-    # apply_only the task status change; drop the structural delete.
+    # Step 1: partial approve (apply only the done; keep the dependency).
     _use_auto_provider(
         ExtractionResult(),
         ApprovalResult([ApprovalResolution(
@@ -1588,31 +1593,53 @@ def test_partial_approval_keeps_dependency_but_records_done(client, monkeypatch)
             apply_only=["downstream"],
         )]),
     )
-    client.post("/events", json={
+    r = client.post("/events", json={
         "id": "raw_3", "type": "message_received", "timestamp": "2025-02-03T11:00:00Z",
         "source": "pm@helios.com",
         "raw_text": "The dependency is real, keep it -- but yes, downstream is done.",
         "payload": {"thread_id": revtid},
     })
 
+    # Gated: nothing applied yet, proposal still pending, PM asked to confirm.
+    approvals = r.json()["approvals"]
+    assert len(approvals["gated"]) == 1
+    assert approvals["approved"] == []
     state = client.get("/state").json()
-    # the done status WAS applied...
-    assert state["Task"]["downstream"]["fields"]["status"] == "done"
-    # ...but the dependency was NOT deleted (the PM kept it).
-    assert "dep1" in state["Dependency"]
+    assert state["Task"]["downstream"]["fields"]["status"] == "open"  # not applied
+    assert [p["id"] for p in client.get("/proposals").json()] == [revision_id]
+    ack_reqs = [e for e in client.get("/events").json()
+                if e["type"] == "message_sent" and e["source"] == "agent:conflict-ack"]
+    assert ack_reqs and ack_reqs[0]["payload"]["payload"]["to"] == "pm@helios.com"
+    assert "depends on unfinished work" in ack_reqs[0]["payload"]["payload"]["body"]
+
+    # Step 2: PM knowingly accepts the inconsistency.
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(revision_id, "approve", reason_span="record it anyway")]),
+    )
+    client.post("/events", json={
+        "id": "raw_4", "type": "message_received", "timestamp": "2025-02-03T12:00:00Z",
+        "source": "pm@helios.com", "raw_text": "Yes, I know -- record it anyway.",
+        "payload": {"thread_id": revtid},
+    })
+
+    state = client.get("/state").json()
+    assert state["Task"]["downstream"]["fields"]["status"] == "done"  # now applied
+    assert "dep1" in state["Dependency"]  # dependency kept
     assert client.get("/proposals").json() == []
 
-    # The human_approval recorded only the applied subset, flagged partial.
-    approvals = [e for e in client.get("/events").json()
-                 if e["type"] == "human_approval" and e["payload"].get("approves") == revision_id]
-    assert approvals and approvals[0]["payload"].get("partial") is True
-    assert [d["entity_id"] for d in approvals[0]["payload"]["deltas"]] == ["downstream"]
+    # The approval records the applied subset AND the acknowledged conflict.
+    appr = [e for e in client.get("/events").json()
+            if e["type"] == "human_approval" and e["payload"].get("approves") == revision_id][0]
+    assert appr["payload"].get("partial") is True
+    assert [d["entity_id"] for d in appr["payload"]["deltas"]] == ["downstream"]
+    ack = appr["payload"].get("acknowledged_conflicts")
+    assert ack and ack[0]["type"] == "task_done_with_open_dep"
 
-    # The author is told what was applied vs. kept.
+    # The author who raised it is told what was applied vs. kept.
     msgs = _outcome_messages_to(client, "dana@helios.com")
     assert len(msgs) == 1
-    body = msgs[0]["payload"]["payload"]["body"]
-    assert "Dependency 'dep1'" in body  # the kept (declined) structural change
+    assert "Dependency 'dep1'" in msgs[0]["payload"]["payload"]["body"]
 
 
 def test_reply_on_closed_thread_reminds_to_open_new_note(client, monkeypatch):

@@ -52,6 +52,43 @@ def author_clarifiable(warnings: list[ConflictWarning]) -> list[ConflictWarning]
     return [w for w in warnings if w.type in AUTHOR_CLARIFIABLE]
 
 
+def state_inconsistencies(state: ProjectState) -> list[ConflictWarning]:
+    """End-state invariants a committed state should not silently violate.
+
+    Unlike `detect_conflicts` (which judges a *transition* -- proposed deltas vs.
+    current state), this judges a *resulting state* on its own. It is what an
+    approval gate runs on the would-be state, so a partial approval can't quietly
+    commit a contradiction the original proposal review never showed.
+
+    Currently one invariant: a task marked done while it still has an ACTIVE
+    dependency on an upstream task that is not done -- if it were truly finished,
+    that dependency would be resolved or was never real. Pure and deterministic.
+    """
+    warnings: list[ConflictWarning] = []
+    task_table = state.entities.get("Task", {})
+    dep_table = state.entities.get("Dependency", {})
+    for dep_id, dep in dep_table.items():
+        if dep.fields.get("status") != "active":
+            continue
+        downstream = task_table.get(dep.fields.get("from_entity_id", ""))
+        upstream = task_table.get(dep.fields.get("to_entity_id", ""))
+        if not downstream or downstream.fields.get("status") not in _DONE_STATUSES:
+            continue
+        if upstream and upstream.fields.get("status") in _DONE_STATUSES:
+            continue
+        upstream_status = upstream.fields.get("status", "missing") if upstream else "missing"
+        warnings.append(ConflictWarning(
+            type="task_done_with_open_dep",
+            entity_id=dep.fields.get("from_entity_id", ""),
+            detail=(
+                f"Task '{dep.fields.get('from_entity_id', '')}' is marked done but still "
+                f"has an active dependency ({dep_id}) on '{dep.fields.get('to_entity_id', '')}' "
+                f"(status: '{upstream_status}')."
+            ),
+        ))
+    return warnings
+
+
 def detect_conflicts(deltas: list[dict], state: ProjectState) -> list[ConflictWarning]:
     """Return semantic conflict warnings for the proposed deltas vs. current state.
 

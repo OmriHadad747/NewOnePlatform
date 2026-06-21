@@ -52,7 +52,12 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException
 
 from aipm.approval import PendingProposal, build_approval_prompt
-from aipm.conflicts import ConflictWarning, author_clarifiable, detect_conflicts
+from aipm.conflicts import (
+    ConflictWarning,
+    author_clarifiable,
+    detect_conflicts,
+    state_inconsistencies,
+)
 from aipm.conversation import build_message_prompt
 from aipm.entities import outbound_event_type
 from aipm.events import RAW_INPUT_TYPES, Event
@@ -233,7 +238,11 @@ def _ask_author_to_clarify(
 
 
 def _apply_approval(
-    proposal: Event, events: list[Event], source: str, apply_only: list[str] | None = None
+    proposal: Event,
+    events: list[Event],
+    source: str,
+    apply_only: list[str] | None = None,
+    acknowledged_conflicts: list[dict] | None = None,
 ) -> Event:
     """Write a human_approval that applies a proposal's deltas/actions to state,
     then execute (stub) its consequential actions. Shared by the explicit
@@ -244,6 +253,11 @@ def _apply_approval(
     (e.g. "yes it's done, but keep that dependency"). Empty/None applies the
     whole proposal, the normal case. The deltas it drops are simply not applied;
     the human_approval records exactly what was applied.
+
+    `acknowledged_conflicts`, when set, records that the human knowingly signed
+    off on an inconsistency the agent flagged (e.g. a task done while it keeps an
+    active dependency). It is stamped on the event so the log shows the
+    contradiction was accepted on purpose, never committed silently.
     """
     deltas = proposal.payload.get("deltas", [])
     if apply_only:
@@ -258,6 +272,7 @@ def _apply_approval(
             "actions": proposal.payload.get("actions", []),
             "approves": proposal.id,
             **({"partial": True} if apply_only else {}),
+            **({"acknowledged_conflicts": acknowledged_conflicts} if acknowledged_conflicts else {}),
         },
     )
 
@@ -339,17 +354,25 @@ def _approve_ticket_batch(batch: Event, source: str) -> dict:
 
 
 def _resolve_proposal_approval(
-    proposal: Event, events: list[Event], source: str, apply_only: list[str] | None = None
+    proposal: Event,
+    events: list[Event],
+    source: str,
+    apply_only: list[str] | None = None,
+    acknowledged_conflicts: list[dict] | None = None,
 ):
     """Approve a proposal: fan out if it's a ticket batch, else apply it.
 
     Returns the human_approval Event for a normal approval, or a fan-out dict
     `{approval, fanned_out}` for a ticket batch. `apply_only` authorizes a subset
-    of a bundled proposal's deltas (ignored for ticket batches, which fan out).
+    of a bundled proposal's deltas (ignored for ticket batches, which fan out);
+    `acknowledged_conflicts` records an inconsistency the human signed off on.
     """
     if _is_ticket_batch(proposal):
         return _approve_ticket_batch(proposal, source)
-    return _apply_approval(proposal, events, source, apply_only=apply_only)
+    return _apply_approval(
+        proposal, events, source,
+        apply_only=apply_only, acknowledged_conflicts=acknowledged_conflicts,
+    )
 
 
 def _reject_proposal(proposal: Event, source: str, reason: str = "") -> Event:
@@ -741,6 +764,95 @@ def _maybe_remind_new_note(reply: Event, events: list[Event]) -> dict | None:
     )
 
 
+# Conflict-acknowledgment gate: before committing an approval, we check whether
+# the resulting state would be inconsistent (e.g. a task done while it keeps an
+# active dependency). If so, we don't apply silently -- we ask the approver to
+# accept it explicitly, and only then record it with `acknowledged_conflicts`.
+_CONFLICT_ACK_SOURCE = "agent:conflict-ack"
+
+
+def _conflicts_payload(warnings: list[ConflictWarning]) -> list[dict]:
+    return [{"type": w.type, "entity_id": w.entity_id, "detail": w.detail} for w in warnings]
+
+
+def _approval_inconsistencies(
+    proposal: Event, apply_only: list[str], state
+) -> list[ConflictWarning]:
+    """Inconsistencies the would-be state holds after applying this approval.
+
+    Simulates the exact deltas to apply (respecting `apply_only`) on a copy of
+    current state, then checks end-state invariants. Because it works on the
+    RESULTING state, a full revision that deletes the offending dependency comes
+    out clean, while a partial approval that keeps it does not.
+    """
+    deltas = [
+        d for d in proposal.payload.get("deltas", [])
+        if not apply_only or d.get("entity_id") in apply_only
+    ]
+    if not deltas:
+        return []
+    post = deepcopy(state)
+    sim = Event(
+        id="sim", type="human_approval", timestamp=_now(), source="sim",
+        payload={"deltas": deltas, "actions": []},
+    )
+    try:
+        apply_event(post, sim)
+    except ProjectionError:
+        return []  # a bad delta -- let the real apply surface it, don't gate here
+    return state_inconsistencies(post)
+
+
+def _ask_conflict_ack(
+    proposal: Event, warnings: list[ConflictWarning], apply_only: list[str], to: str
+) -> dict:
+    """Ask the approver to knowingly accept (or fix) an inconsistency they'd commit.
+
+    Stores the exact subset (`apply_only`) and the flagged conflicts on the
+    request, so the follow-up confirmation applies precisely what was warned
+    about and stamps it as acknowledged. Offers the coherent alternative too.
+    """
+    detail = " ".join(w.detail for w in warnings)
+    thread_id = proposal.payload.get("thread_id")
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": to,
+            "subject": "Before I record this -- a contradiction to confirm",
+            "body": (
+                f"Heads up: {detail} That's inconsistent -- a task can't be finished "
+                "while it still depends on unfinished work. If it really is done, I "
+                "can mark that dependency resolved instead. Reply 'record it anyway' "
+                "to accept it as-is, or tell me how you'd like it fixed."
+            ),
+            "proposal_id": proposal.id,
+            "thread_id": thread_id,
+            # Remembered so the confirmation applies the same subset, acknowledged.
+            "apply_only": apply_only or [],
+            "ack_conflicts": _conflicts_payload(warnings),
+        },
+    }
+    return _write_outbound_event(
+        action, source=_CONFLICT_ACK_SOURCE, source_event_id=proposal.id, thread_id=thread_id
+    )
+
+
+def _pending_conflict_ack(proposal_id: str, events: list[Event]) -> dict | None:
+    """The subset+conflicts we last asked this proposal's approver to confirm.
+
+    Its presence means we've already gated this proposal once, so the next
+    approve reply is the human's explicit acknowledgment -- apply it now.
+    """
+    for e in reversed(events):
+        if e.type == "message_sent" and e.source == _CONFLICT_ACK_SOURCE:
+            inner = e.payload.get("payload", {})
+            if inner.get("proposal_id") == proposal_id:
+                return {"apply_only": inner.get("apply_only", []),
+                        "conflicts": inner.get("ack_conflicts", [])}
+    return None
+
+
 def _resolve_approvals_from_reply(
     reply: Event, provider: ExtractionProvider
 ) -> dict | None:
@@ -780,6 +892,7 @@ def _resolve_approvals_from_reply(
     rejected: list[dict] = []
     amended: list[dict] = []
     revised: list[dict] = []
+    gated: list[dict] = []
     fanned_out: list[dict] = []
     resolved_ids: set[str] = set()
     for res in result.resolutions:
@@ -787,9 +900,26 @@ def _resolve_approvals_from_reply(
         if target is None:
             continue
         if res.decision == "approve":
+            events_now = storage.read_events()
+            prior = _pending_conflict_ack(target.id, events_now)
+            if prior is None:
+                # First approve: would committing this leave state inconsistent?
+                warnings = _approval_inconsistencies(
+                    target, res.apply_only, project(events_now)
+                )
+                if warnings:
+                    # Gate: don't apply. Ask the approver to accept it knowingly.
+                    # Stays pending; their next 'yes' is the acknowledgment.
+                    _ask_conflict_ack(target, warnings, res.apply_only, to=reply.source)
+                    gated.append({"proposal_id": target.id,
+                                  "conflicts": _conflicts_payload(warnings)})
+                    resolved_ids.add(res.proposal_id)  # handled now; suppress chase
+                    continue
+            apply_only = prior["apply_only"] if prior else res.apply_only
+            acknowledged = prior["conflicts"] if prior else None
             outcome = _resolve_proposal_approval(
-                target, storage.read_events(), source=f"email:{reply.source}",
-                apply_only=res.apply_only,
+                target, events_now, source=f"email:{reply.source}",
+                apply_only=apply_only, acknowledged_conflicts=acknowledged,
             )
             if isinstance(outcome, dict):  # ticket batch -> fanned out to owners
                 approved.append(outcome["approval"])
@@ -799,7 +929,7 @@ def _resolve_approvals_from_reply(
                 # Close the loop with whoever raised a model revision: tell them
                 # what the PM applied vs. kept (a partial approve drops some).
                 all_ids = [d.get("entity_id") for d in target.payload.get("deltas", [])]
-                applied_ids = res.apply_only or all_ids
+                applied_ids = apply_only or all_ids
                 _close_revision_loop(target, applied_ids, res.reason_span)
             resolved_ids.add(res.proposal_id)
         elif res.decision == "reject":
@@ -886,6 +1016,7 @@ def _resolve_approvals_from_reply(
         "rejected": rejected,
         "amended": amended,
         "revised": revised,
+        "gated": gated,
         "fanned_out": fanned_out,
         "composed": composed,
         "nudged": nudged,

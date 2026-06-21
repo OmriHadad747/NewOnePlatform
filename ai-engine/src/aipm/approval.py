@@ -39,6 +39,9 @@ Rules:
   ("yes, but ...", "ok if ...", "what about ...?") is NOT approval -- defer it.
 - Use "reject" when the reply clearly declines it ("no", "don't", "hold off",
   "not yet").
+- A reply that explicitly ACCEPTS a previously-flagged inconsistency ("yes,
+  record it anyway", "I know it's done with an open dependency, that's fine") is
+  an "approve" -- the human is knowingly signing off on it.
 - Use "amend" when the reply confirms a status change only PARTIALLY -- the
   work is mostly finished but a piece remains, or it cannot be fully completed
   yet ("almost done, just a small fix left", "done except for X", "I finished

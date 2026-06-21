@@ -52,7 +52,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException
 
 from aipm.approval import PendingProposal, build_approval_prompt
-from aipm.conflicts import detect_conflicts
+from aipm.conflicts import ConflictWarning, author_clarifiable, detect_conflicts
 from aipm.conversation import build_message_prompt
 from aipm.entities import outbound_event_type
 from aipm.events import RAW_INPUT_TYPES, Event
@@ -184,6 +184,43 @@ def _ask_for_approval(proposal: Event, events: list[Event]) -> dict:
             "body": (
                 f"I'd like to proceed with: {summary}. "
                 f"Reply to approve or decline."
+            ),
+            "proposal_id": proposal.id,
+            "thread_id": thread_id,
+        },
+    }
+    return _write_outbound_event(
+        action, source="agent:approval-request", source_event_id=proposal.id, thread_id=thread_id
+    )
+
+
+def _ask_author_to_clarify(
+    proposal: Event, conflicts: list[ConflictWarning], events: list[Event]
+) -> dict:
+    """Ask the message author to resolve a claim that contradicts known state,
+    before the proposal ever escalates to the PM.
+
+    The proposal's `approver` is the author, so their reply resolves against it
+    through the normal reply path, and the nudge/escalation ladder still
+    backstops to the PM if they go quiet. Worded as a question, not an approval
+    -- the point is to dig into the contradiction, not rubber-stamp it. Uses the
+    `agent:approval-request` source so the follow-up ladder recognizes that
+    we've already reached out about this proposal.
+    """
+    summary = _summarize_proposal_payload(proposal.payload)
+    thread_id = proposal.payload.get("thread_id")
+    detail = " ".join(w.detail for w in conflicts)
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": _approval_recipient(events, proposal.payload),
+            "subject": f"Quick check before I record this: {summary[:50]}",
+            "body": (
+                f"I picked up from your update: {summary}. Before I record it, "
+                f"something doesn't line up -- {detail} "
+                "Is this genuinely complete, or is there still a piece pending? "
+                "Reply and I'll capture it correctly."
             ),
             "proposal_id": proposal.id,
             "thread_id": thread_id,
@@ -642,6 +679,16 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
         for w in raw_conflicts
     ]
 
+    # When the author's own input contradicts known state ("done" while still
+    # blocked, a deadline pulled earlier, a risk quietly downgraded), check back
+    # with THEM before this ever reaches the PM. Setting the proposal's approver
+    # to the author re-aims the request at them; the whole proposal rides along
+    # (splitting off the contradicting delta would leave state half-applied),
+    # and the nudge/escalation ladder still backstops to the PM if they go quiet.
+    author_conflicts = author_clarifiable(raw_conflicts)
+    if author_conflicts:
+        payload["approver"] = source.source
+
     # `info_request` actions are routine info-gathering the agent does on its
     # own -- execute (stub) them immediately and log the outbound event, with
     # no human_approval. `consequential` actions stay in the proposal,
@@ -683,7 +730,13 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
         proposal = asdict(proposal_event)
         # The agent reaches out (stub) to ask a human to authorize the proposal;
         # that person approves by replying -- see the email-reply approval path.
-        approval_request = _ask_for_approval(proposal_event, storage.read_events())
+        # If the author contradicted state, ask THEM to clarify first instead.
+        if author_conflicts:
+            approval_request = _ask_author_to_clarify(
+                proposal_event, author_conflicts, storage.read_events()
+            )
+        else:
+            approval_request = _ask_for_approval(proposal_event, storage.read_events())
 
     executed = [
         _write_outbound_event(action, source=f"agent:{provider.name}", source_event_id=source.id)

@@ -1183,3 +1183,111 @@ def test_model_messages_off_uses_ladder_on_thread(client, monkeypatch):
     assert approvals["composed"] == []
     assert [n["proposal_id"] for n in approvals["nudged"]] == [proposal_id]
     assert not any(e["source"] == "agent:compose" for e in client.get("/events").json())
+
+
+# --- author-claim conflict routes to the author, not the PM --------------------
+
+
+def test_author_claim_conflict_routes_clarification_to_author(client, monkeypatch):
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    # the project has a PM, so we can prove the clarification does NOT go to them
+    client.post("/project", json={"name": "Helios", "pm": "pm@helios.com"})
+
+    # state: a task that depends on a still-blocked upstream task
+    setup = {
+        "id": "evt_setup",
+        "type": "human_approval",
+        "timestamp": "2025-01-01T00:00:00Z",
+        "source": "test",
+        "payload": {
+            "deltas": [
+                _delta("create", "Task", "upstream", {"status": "blocked"}),
+                _delta("create", "Task", "downstream", {"status": "open"}),
+                _delta(
+                    "create", "Dependency", "dep1",
+                    {"from_entity_id": "downstream", "to_entity_id": "upstream", "status": "active"},
+                ),
+            ],
+            "actions": [],
+        },
+    }
+    client.post("/events", json=setup)
+
+    # the author claims their downstream task is done -- but it's still blocked
+    _use_auto_provider(
+        ExtractionResult(
+            deltas=[
+                ProposedDelta(
+                    "update", "Task", "downstream", {"status": "done"},
+                    source_span="downstream is done",
+                )
+            ]
+        )
+    )
+    resp = client.post(
+        "/events",
+        json={
+            "id": "raw_1",
+            "type": "manual_note",
+            "timestamp": "2025-02-03T09:00:00Z",
+            "source": "yuki@helios.com",
+            "raw_text": "downstream is done",
+            "payload": {},
+        },
+    )
+
+    extraction = resp.json()["extraction"]
+    assert extraction["conflicts"][0]["type"] == "task_done_with_open_dep"
+
+    # the proposal is re-aimed at the author for clarification, not the PM
+    proposal = extraction["proposal"]
+    assert proposal["payload"]["approver"] == "yuki@helios.com"
+
+    # nothing applied yet -- the claim is still pending the author's answer
+    assert client.get("/state").json()["Task"]["downstream"]["fields"]["status"] == "open"
+
+    # exactly one outreach, and it went to the author rather than pm@helios.com
+    asks = [
+        e for e in client.get("/events").json()
+        if e["type"] == "message_sent"
+        and e["payload"]["payload"].get("proposal_id") == proposal["id"]
+    ]
+    assert len(asks) == 1
+    assert asks[0]["payload"]["payload"]["to"] == "yuki@helios.com"
+
+
+def test_clean_proposal_still_routes_to_pm(client, monkeypatch):
+    # a non-conflicting proposal must keep going to the PM, unchanged
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Helios", "pm": "pm@helios.com"})
+    _use_auto_provider(
+        ExtractionResult(
+            actions=[
+                ProposedAction(
+                    "open_ticket", "consequential", {"title": "Resolve PayPal support"},
+                    source_span="open a ticket about PayPal",
+                )
+            ]
+        )
+    )
+    resp = client.post(
+        "/events",
+        json={
+            "id": "raw_1",
+            "type": "manual_note",
+            "timestamp": "2025-02-03T09:00:00Z",
+            "source": "yuki@helios.com",
+            "raw_text": "Someone should open a ticket about PayPal.",
+            "payload": {},
+        },
+    )
+    proposal = resp.json()["extraction"]["proposal"]
+    assert "approver" not in proposal["payload"]
+
+    asks = [
+        e for e in client.get("/events").json()
+        if e["type"] == "message_sent"
+        and e["payload"]["payload"].get("proposal_id") == proposal["id"]
+    ]
+    assert len(asks) == 1
+    assert asks[0]["payload"]["payload"]["to"] == "pm@helios.com"

@@ -258,3 +258,28 @@ def test_project_deadline_exceeded_combined_with_other_conflicts():
     types = {w.type for w in warnings}
     assert "deadline_regression" in types
     assert "project_deadline_exceeded" in types
+
+
+# --- author-clarifiable classification -----------------------------------------
+
+
+def test_author_clarifiable_selects_author_claims():
+    from aipm.conflicts import AUTHOR_CLARIFIABLE, author_clarifiable
+
+    warnings = [
+        ConflictWarning("task_done_with_open_dep", "t1", "done while blocked"),
+        ConflictWarning("deadline_regression", "d1", "pulled earlier"),
+        ConflictWarning("risk_downgraded", "r1", "quietly downgraded"),
+        ConflictWarning("project_deadline_exceeded", "x1", "past project end"),
+    ]
+    picked = {w.type for w in author_clarifiable(warnings)}
+    assert picked == {"task_done_with_open_dep", "deadline_regression", "risk_downgraded"}
+    # a timeline breach is a PM acknowledgment, never an author "did you mean it"
+    assert "project_deadline_exceeded" not in AUTHOR_CLARIFIABLE
+
+
+def test_author_clarifiable_empty_when_no_author_conflicts():
+    from aipm.conflicts import author_clarifiable
+
+    assert author_clarifiable([]) == []
+    assert author_clarifiable([ConflictWarning("project_deadline_exceeded", "x", "...")]) == []

@@ -30,6 +30,28 @@ class ConflictWarning:
     detail: str
 
 
+# Conflict types where the *author's own input* contradicts known state -- the
+# kind of thing to check back with whoever said it ("did you really mean this?")
+# before escalating to a project manager. `project_deadline_exceeded` is left
+# out on purpose: a timeline breach is a PM acknowledgment, already surfaced as
+# a consequential flag the PM must sign off on -- not a "did you mean it" for
+# the author.
+AUTHOR_CLARIFIABLE: frozenset[str] = frozenset({
+    "task_done_with_open_dep",
+    "deadline_regression",
+    "risk_downgraded",
+})
+
+
+def author_clarifiable(warnings: list[ConflictWarning]) -> list[ConflictWarning]:
+    """Subset of `warnings` the message author can clarify, vs. a PM decision.
+
+    Lets the extraction flow route a contradicting claim back to whoever made
+    it before it ever reaches a project manager. Pure: just a type filter.
+    """
+    return [w for w in warnings if w.type in AUTHOR_CLARIFIABLE]
+
+
 def detect_conflicts(deltas: list[dict], state: ProjectState) -> list[ConflictWarning]:
     """Return semantic conflict warnings for the proposed deltas vs. current state.
 

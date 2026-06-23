@@ -63,7 +63,7 @@ from aipm.events import RAW_INPUT_TYPES, Event
 from aipm.extraction import build_prompt, filter_grounded
 from aipm.extraction.providers import ExtractionProvider
 from aipm.projection import ProjectionError, apply_event, project
-from aipm.review import review_state as _review_state
+from aipm.review import review_consequential_only, review_state as _review_state
 from aipm.revision import build_revision_prompt
 from aipm.schema import normalize_payload
 
@@ -236,6 +236,38 @@ def _ask_author_to_clarify(
     )
 
 
+def _auto_review_consequential(trigger_event_id: str) -> None:
+    """Run consequential-only review after an approval changed state.
+
+    Fires raise_flag / escalate proposals if new issues surfaced. Skips
+    info_request pings entirely — those stay in manual `aipm review`.
+    """
+    events = storage.read_events()
+    state = project(events)
+    result = review_consequential_only(state)
+    if not result.actions:
+        return
+    actions_with_prov = [
+        {**a, "provenance": {"asserted_by": "review:rules"}}
+        for a in result.actions
+    ]
+    proposal_event = Event(
+        id=f"prop_{uuid.uuid4().hex[:12]}",
+        type="agent_proposal",
+        timestamp=_now(),
+        source="review:auto",
+        payload={
+            "provider": "review:rules",
+            "source_event_id": trigger_event_id,
+            "deltas": [],
+            "actions": actions_with_prov,
+            "thread_id": _new_thread_id(),
+        },
+    )
+    storage.write_event(proposal_event)
+    _ask_for_approval(proposal_event, storage.read_events())
+
+
 def _apply_approval(
     proposal: Event,
     events: list[Event],
@@ -281,6 +313,8 @@ def _apply_approval(
 
     for action in approval.payload["actions"]:
         _write_outbound_event(action, source="agent:approved", source_event_id=approval.id)
+
+    _auto_review_consequential(approval.id)
     return approval
 
 

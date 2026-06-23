@@ -381,7 +381,10 @@ def test_review_state_proposal_approved_by_reply_raises_flag(client, monkeypatch
     })
 
     assert any(e["type"] == "flag_raised" for e in client.get("/events").json())
-    assert client.get("/proposals").json() == []
+    # Auto-review may re-propose if the risk still has no owner; just verify
+    # the original proposal is no longer pending (it was approved).
+    pending_ids = [p["id"] for p in client.get("/proposals").json()]
+    assert proposal_id not in pending_ids
 
 
 # --- project definition --------------------------------------------------------

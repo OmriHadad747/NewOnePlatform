@@ -59,6 +59,17 @@ def review_state(state: ProjectState, now: datetime | None = None) -> ReviewResu
     return result
 
 
+def review_consequential_only(state: ProjectState, now: datetime | None = None) -> ReviewResult:
+    """Only the checks that need PM approval (flags + escalation). Safe to auto-run."""
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    result = ReviewResult()
+    _check_unowned_high_risks(state, result)
+    _check_overdue_deadlines(state, result, now)
+    return result
+
+
 def _owner(entity_fields: dict) -> str:
     return entity_fields.get("owner") or entity_fields.get("assignee") or "team"
 

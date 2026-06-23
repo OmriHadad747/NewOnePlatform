@@ -92,3 +92,11 @@ aipm state | events | proposals | review
   `from_entity_id`/`to_entity_id`, …) before a proposal is built. Add new
   aliases to `aipm/schema.py` — that's the single place that guarantees the
   safety nets engage. Unknown field names pass through untouched.
+- **Identity is email, not name.** People are referred to by name in free text,
+  but names aren't unique. `aipm.identity` deterministically resolves an `owner`
+  mention to a member email against the roster (`meta.team` — strings, or
+  `{name,email}` dicts for same-first-name people — plus pm/tech_lead). It runs
+  right after `normalize_payload` in extraction: unambiguous → rewritten to the
+  email, ambiguous → left raw + a clarification to the author (never guessed),
+  unknown → left untouched. The approval gate (`_sender_may_approve`) and ticket
+  fan-out (`approver`) compare emails, so resolution is what makes them line up.

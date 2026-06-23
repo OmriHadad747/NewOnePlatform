@@ -27,7 +27,10 @@ class ExtractRequest(BaseModel):
 class ProjectIn(BaseModel):
     name: str
     description: str | None = None
-    team: list[str] = Field(default_factory=list)
+    # A roster entry is either a string (an email if it contains '@', else a
+    # legacy bare name) or a {"name", "email"} dict -- the dict form lets two
+    # people who share a first name be told apart by the identity resolver.
+    team: list[str | dict[str, str]] = Field(default_factory=list)
     start_date: str | None = None
     end_date: str | None = None
     pm: str | None = None        # email address of the project manager (escalation target)

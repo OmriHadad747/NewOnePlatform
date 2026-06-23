@@ -499,14 +499,14 @@ def test_auto_extract_skips_non_raw_events(client, monkeypatch):
 # --- approval by email reply --------------------------------------------------
 
 
-def _email_reply(event_id, text, source="maya@orion.com"):
+def _email_reply(event_id, text, source="maya@orion.com", thread_id=None):
     return {
         "id": event_id,
         "type": "message_received",
         "timestamp": "2025-02-03T10:00:00Z",
         "source": source,
         "raw_text": text,
-        "payload": {},
+        "payload": {"thread_id": thread_id} if thread_id else {},
     }
 
 
@@ -1931,3 +1931,127 @@ def test_no_identity_configured_allows_anyone(client, monkeypatch):
     approvals = reply.json()["approvals"]
     assert len(approvals["approved"]) == 1
     assert approvals.get("unauthorized", []) == []
+
+
+# --- identity resolution (names -> emails) ------------------------------------
+
+
+def test_extraction_resolves_owner_name_to_email(client, monkeypatch):
+    """A task owner named 'Dana' is rewritten to her roster email."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={
+        "name": "Apollo",
+        "team": [{"name": "Dana", "email": "dana@co.com"}],
+        "pm": "pm@company.com",
+    })
+    _use_auto_provider(ExtractionResult(deltas=[
+        ProposedDelta("create", "Task", "api-scaffold",
+                      {"title": "API scaffold", "owner": "Dana"}, "Dana will own"),
+    ]))
+    resp = client.post("/events", json=_raw_event("note1", "Dana will own the API scaffold."))
+    owner = resp.json()["extraction"]["proposal"]["payload"]["deltas"][0]["fields"]["owner"]
+    assert owner == "dana@co.com"
+
+
+def test_ambiguous_owner_triggers_identity_clarification(client, monkeypatch):
+    """Two Danas -> a bare 'Dana' owner is left raw and the author is asked which."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={
+        "name": "Apollo",
+        "team": [
+            {"name": "Dana Cohen", "email": "dana.cohen@co.com"},
+            {"name": "Dana Levi", "email": "dana.levi@co.com"},
+        ],
+        "pm": "pm@company.com",
+    })
+    _use_auto_provider(ExtractionResult(deltas=[
+        ProposedDelta("create", "Task", "api-scaffold",
+                      {"title": "API scaffold", "owner": "Dana"}, "Dana will own"),
+    ]))
+    resp = client.post("/events", json=_raw_event("note1", "Dana will own the API scaffold."))
+    body = resp.json()["extraction"]
+    # owner left raw (not guessed), proposal still created
+    assert body["proposal"]["payload"]["deltas"][0]["fields"]["owner"] == "Dana"
+    # a clarification was sent to the author naming the candidates
+    clar = [
+        e for e in client.get("/events").json()
+        if e["source"] == "agent:identity-clarification"
+    ]
+    assert clar
+    assert clar[0]["payload"]["payload"]["to"] == "pm_note"
+    assert "dana.cohen@co.com" in clar[0]["payload"]["payload"]["body"]
+
+
+def test_owner_confirms_ticket_by_email(client, monkeypatch):
+    """The #1 fix: fan-out approver is the owner's email, so she confirms by email."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={
+        "name": "Apollo",
+        "team": [{"name": "Dana", "email": "dana@co.com"}],
+        "pm": "pm@company.com",
+    })
+    # task owned by the resolved email
+    client.post("/events", json=_human_approval(
+        "evt_task",
+        _delta("create", "Task", "api-scaffold", {"title": "API scaffold", "owner": "dana@co.com"}),
+    ))
+    batch_id = client.post("/open-tickets").json()["proposal"]["id"]
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(batch_id, "approve", "yes")]),
+    )
+    client.post("/events", json=_email_reply("raw_pm", "Yes.", source="pm@company.com"))
+
+    pending = client.get("/proposals").json()
+    dana_prop = next(p for p in pending if p["payload"]["approver"] == "dana@co.com")
+
+    # a stranger email cannot confirm dana's ticket
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(dana_prop["id"], "approve", "yes")]),
+    )
+    stranger = client.post("/events", json=_email_reply(
+        "raw_x", "Yes, open it.", source="someone-else@co.com",
+        thread_id=dana_prop["payload"]["thread_id"],
+    ))
+    assert len(stranger.json()["approvals"]["unauthorized"]) == 1
+    assert not any(e["type"] == "ticket_opened" for e in client.get("/events").json())
+
+    # dana confirms FROM HER EMAIL -> authorized -> her ticket opens
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(dana_prop["id"], "approve", "yes")]),
+    )
+    reply = client.post("/events", json=_email_reply(
+        "raw_dana", "Yes, open it.", source="dana@co.com",
+        thread_id=dana_prop["payload"]["thread_id"],
+    ))
+    assert reply.json()["approvals"].get("unauthorized", []) == []
+    opened = [e for e in client.get("/events").json() if e["type"] == "ticket_opened"]
+    assert len(opened) == 1
+
+
+def test_reject_is_gated_for_unauthorized_sender(client, monkeypatch):
+    """#2: a stranger cannot reject (cancel) a valid proposal."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "AuthTest", "pm": "pm@co.com", "tech_lead": "cto@co.com"})
+    client.post("/events", json=_human_approval(
+        "setup", _delta("create", "Risk", "leak", {"severity": "high", "status": "open"}),
+    ))
+    prop = client.post("/review-state").json()["proposal"]
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(prop["id"], "reject", "no")]),
+    )
+    reply = client.post("/events", json={
+        "id": "stranger_reject", "type": "message_received",
+        "timestamp": "2025-01-02T00:00:00Z",
+        "source": "hacker@evil.com", "raw_text": "No, drop it.",
+        "payload": {"thread_id": prop["payload"]["thread_id"]},
+    })
+    approvals = reply.json()["approvals"]
+    assert approvals["rejected"] == []
+    assert len(approvals["unauthorized"]) == 1
+    # proposal survives
+    assert any(p["id"] == prop["id"] for p in client.get("/proposals").json())

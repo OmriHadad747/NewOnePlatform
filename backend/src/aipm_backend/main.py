@@ -63,6 +63,7 @@ from aipm.events import RAW_INPUT_TYPES, Event
 from aipm.extraction import build_prompt, filter_grounded
 from aipm.extraction.providers import ExtractionProvider
 from aipm.projection import ProjectionError, apply_event, project
+from aipm.identity import build_roster, resolve, resolve_payload_identities
 from aipm.review import review_consequential_only, review_state as _review_state
 from aipm.revision import build_revision_prompt
 from aipm.schema import normalize_payload
@@ -505,8 +506,16 @@ def _approve_ticket_batch(batch: Event, source: str) -> dict:
         clean["payload"].pop("requires_owner_confirmation", None)
         by_owner[owner].append(clean)
 
+    # The owner is the proposal's approver, and the approval gate compares
+    # emails -- so resolve the owner to their roster email. Owners minted by
+    # extraction are already emails; this also covers tickets whose owner was
+    # set elsewhere. Unresolvable owners fall back to the raw value.
+    roster = build_roster(project(storage.read_events()).meta)
+
     fanned: list[dict] = []
     for owner, actions in by_owner.items():
+        resolved = resolve(owner, roster)
+        approver = resolved.email if resolved.status == "resolved" else owner
         proposal = Event(
             id=f"prop_{uuid.uuid4().hex[:12]}",
             type="agent_proposal",
@@ -515,7 +524,7 @@ def _approve_ticket_batch(batch: Event, source: str) -> dict:
             payload={
                 "deltas": [],
                 "actions": actions,
-                "approver": owner,  # the owner has the final say on their ticket(s)
+                "approver": approver,  # the owner has the final say on their ticket(s)
                 "provider": "ticket-planner",
                 "source_event_id": batch.id,
                 "thread_id": _new_thread_id(),  # each owner gets their own thread
@@ -1122,7 +1131,12 @@ def _resolve_approvals_from_reply(
         target = by_id.get(res.proposal_id)
         if target is None:
             continue
-        if res.decision in ("approve", "amend") and not _sender_may_approve(
+        # Gate the decisions that change a proposal's fate -- approving, amending,
+        # or rejecting it. A stranger replying "no" can otherwise kill a valid
+        # proposal and stop the chase, so reject is gated alongside approve/amend.
+        # `defer` (no-op) and `revise` (only drafts a correction for the PM) are
+        # low-risk and left ungated.
+        if res.decision in ("approve", "amend", "reject") and not _sender_may_approve(
             reply.source, target, state
         ):
             _write_outbound_event(
@@ -1131,10 +1145,10 @@ def _resolve_approvals_from_reply(
                     "category": "info_request",
                     "payload": {
                         "to": reply.source,
-                        "subject": f"Not authorized to approve proposal {target.id}",
+                        "subject": f"Not authorized to act on proposal {target.id}",
                         "body": (
-                            "You are not authorized to approve this request. "
-                            "Only the project manager or tech lead can approve, "
+                            "You are not authorized to approve or reject this request. "
+                            "Only the project manager or tech lead can, "
                             "unless this request was specifically addressed to you."
                         ),
                     },
@@ -1312,6 +1326,31 @@ def _send_clarification(source: Event, delta: dict, reason: str) -> dict:
     return _write_outbound_event(action, source="agent:clarification", source_event_id=source.id)
 
 
+def _send_identity_clarification(source: Event, issue) -> dict:
+    """Ask the author which person an ambiguous owner mention refers to.
+
+    The mention matched more than one roster member (e.g. two people named
+    Dana), so we cannot pick an identity without guessing. We name the
+    candidate emails and ask the author to reply with the specific one.
+    """
+    candidates = ", ".join(issue.candidates)
+    action = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": source.source,
+            "subject": f"Which '{issue.mention}'? -- {issue.entity_type} '{issue.entity_id}'",
+            "body": (
+                f"You named '{issue.mention}' as the owner, but that matches more "
+                f"than one person: {candidates}. Which one did you mean? "
+                "Reply with their email so I assign it correctly."
+            ),
+            "entity_id": issue.entity_id,
+        },
+    }
+    return _write_outbound_event(action, source="agent:identity-clarification", source_event_id=source.id)
+
+
 def _run_extraction(source: Event, events: list[Event], provider: ExtractionProvider) -> dict:
     """Extract from one raw event: write a proposal for anything needing
     approval, auto-execute info_request actions, and surface conflicts.
@@ -1332,6 +1371,14 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
     # model is told the canonical names in the prompt, this guarantees them.
     payload = normalize_payload(payload)
 
+    # Resolve person mentions (a Task/Risk `owner` named "Dana") to a stable
+    # member email against the roster, so everything downstream keys on identity,
+    # not a name. Unambiguous mentions are rewritten in place; an ambiguous one
+    # (two Danas) is left raw and surfaced as a clarification to the author --
+    # we never guess which person they meant. Unknown names are left untouched.
+    roster = build_roster(state.meta)
+    identity_issues = resolve_payload_identities(payload["deltas"], roster)
+
     # Deltas we can't reconcile against state become clarification emails to the
     # author, not silent failures -- the rest of the proposal proceeds normally.
     payload["deltas"], unclear = _unapplicable_deltas(payload["deltas"], state)
@@ -1344,6 +1391,15 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
         }
         for d, reason in unclear
     ]
+    clarifications.extend(
+        {
+            "entity_type": issue.entity_type,
+            "entity_id": issue.entity_id,
+            "reason": f"ambiguous owner {issue.mention!r}",
+            "request": _send_identity_clarification(source, issue),
+        }
+        for issue in identity_issues
+    )
 
     raw_conflicts = detect_conflicts(payload["deltas"], state)
     conflicts = [

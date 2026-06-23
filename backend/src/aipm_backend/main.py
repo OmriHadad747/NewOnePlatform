@@ -1040,6 +1040,18 @@ def _sender_may_approve(sender: str, proposal: Event, state: ProjectState) -> bo
     `approver` field (ticket owner confirmations) may also be approved by
     that person. If no identity is configured (no PM/tech_lead), the gate
     is permissive — authorization is opt-in once project roles are set.
+
+    TODO(auth-#3): `sender` comes from `reply.source`, a free string on the
+    posted event. Anyone who can POST /events can spoof it, so this gate is a
+    guardrail against casual/accidental approval, NOT a security boundary. Real
+    enforcement requires the inbound channel to authenticate the sender before
+    the event is ever written.
+
+    TODO(auth-#4): the no-PM/no-tech_lead fallback disables the gate entirely
+    and silently. That's intentional (opt-in, backwards-compatible) but a
+    project that simply forgets to set roles has no gate at all. Consider
+    surfacing "authorization gate: off" in /project or review output so an
+    unconfigured project is a visible choice, not a silent gap.
     """
     sender_lower = (sender or "").lower().strip()
     if not sender_lower:
@@ -1049,7 +1061,7 @@ def _sender_may_approve(sender: str, proposal: Event, state: ProjectState) -> bo
     pm = (meta.get("pm") or "").lower().strip()
     tech_lead = (meta.get("tech_lead") or "").lower().strip()
 
-    if not pm and not tech_lead:
+    if not pm and not tech_lead:  # TODO(auth-#4): silent open gate when unconfigured
         return True
 
     if sender_lower in (pm, tech_lead):

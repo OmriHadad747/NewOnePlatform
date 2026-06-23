@@ -1847,3 +1847,87 @@ def test_flag_auto_resolves_when_owner_assigned(client, monkeypatch):
     # Review should not re-flag (owner assigned + flag resolved)
     review2 = client.post("/review-state").json()
     assert review2["proposal"] is None
+
+
+# --- identity binding / authorization gate ------------------------------------
+
+
+def test_unauthorized_sender_cannot_approve(client, monkeypatch):
+    """A stranger cannot approve a proposal when PM/tech_lead are configured."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "AuthTest", "pm": "pm@co.com", "tech_lead": "cto@co.com"})
+    client.post("/events", json=_human_approval(
+        "setup",
+        _delta("create", "Risk", "leak", {"severity": "high", "status": "open"}),
+    ))
+
+    review = client.post("/review-state").json()
+    prop = review["proposal"]
+    assert prop is not None
+
+    # An unknown sender tries to approve
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(prop["id"], "approve", "yes")]),
+    )
+    reply = client.post("/events", json={
+        "id": "stranger_reply", "type": "message_received",
+        "timestamp": "2025-01-02T00:00:00Z",
+        "source": "hacker@evil.com", "raw_text": "Yes, approve everything.",
+        "payload": {"thread_id": prop["payload"]["thread_id"]},
+    })
+
+    approvals = reply.json()["approvals"]
+    assert approvals["approved"] == []
+    assert len(approvals["unauthorized"]) == 1
+    assert approvals["unauthorized"][0]["sender"] == "hacker@evil.com"
+
+    # Proposal is still pending
+    pending = client.get("/proposals").json()
+    assert any(p["id"] == prop["id"] for p in pending)
+
+
+def test_pm_can_approve(client, monkeypatch):
+    """The PM can approve proposals."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "AuthTest", "pm": "pm@co.com", "tech_lead": "cto@co.com"})
+    client.post("/events", json=_human_approval(
+        "setup",
+        _delta("create", "Risk", "leak2", {"severity": "high", "status": "open"}),
+    ))
+
+    review = client.post("/review-state").json()
+    prop = review["proposal"]
+
+    # PM approves
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(prop["id"], "approve", "raise it")]),
+    )
+    reply = client.post("/events", json={
+        "id": "pm_reply", "type": "message_received",
+        "timestamp": "2025-01-02T00:00:00Z",
+        "source": "pm@co.com", "raw_text": "Yes, raise it.",
+        "payload": {"thread_id": prop["payload"]["thread_id"]},
+    })
+
+    approvals = reply.json()["approvals"]
+    assert len(approvals["approved"]) == 1
+    assert approvals.get("unauthorized", []) == []
+
+
+def test_no_identity_configured_allows_anyone(client, monkeypatch):
+    """Without PM/tech_lead set, any sender can approve (backwards-compatible)."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    # No /project call — no PM or tech_lead configured
+    proposal_id = _pending_consequential_proposal(client)
+
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(proposal_id, "approve", "yes")]),
+    )
+    reply = client.post("/events", json=_email_reply("anon_reply", "Yes, go ahead."))
+
+    approvals = reply.json()["approvals"]
+    assert len(approvals["approved"]) == 1
+    assert approvals.get("unauthorized", []) == []

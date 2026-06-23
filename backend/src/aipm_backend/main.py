@@ -1033,6 +1033,35 @@ def _pending_conflict_ack(proposal_id: str, events: list[Event]) -> dict | None:
     return None
 
 
+def _sender_may_approve(sender: str, proposal: Event, state: ProjectState) -> bool:
+    """Check if the reply sender is authorized to approve this proposal.
+
+    PM and tech_lead may approve anything. A proposal with an explicit
+    `approver` field (ticket owner confirmations) may also be approved by
+    that person. If no identity is configured (no PM/tech_lead), the gate
+    is permissive — authorization is opt-in once project roles are set.
+    """
+    sender_lower = (sender or "").lower().strip()
+    if not sender_lower:
+        return False
+
+    meta = state.meta
+    pm = (meta.get("pm") or "").lower().strip()
+    tech_lead = (meta.get("tech_lead") or "").lower().strip()
+
+    if not pm and not tech_lead:
+        return True
+
+    if sender_lower in (pm, tech_lead):
+        return True
+
+    designated = (proposal.payload.get("approver") or "").lower().strip()
+    if designated and sender_lower == designated:
+        return True
+
+    return False
+
+
 def _resolve_approvals_from_reply(
     reply: Event, provider: ExtractionProvider
 ) -> dict | None:
@@ -1068,16 +1097,42 @@ def _resolve_approvals_from_reply(
     result = provider.resolve_approvals(prompt)
 
     by_id = {p.id: p for p in pending}
+    state = project(storage.read_events())
     approved: list[dict] = []
     rejected: list[dict] = []
     amended: list[dict] = []
     revised: list[dict] = []
     gated: list[dict] = []
     fanned_out: list[dict] = []
+    unauthorized: list[dict] = []
     resolved_ids: set[str] = set()
     for res in result.resolutions:
         target = by_id.get(res.proposal_id)
         if target is None:
+            continue
+        if res.decision in ("approve", "amend") and not _sender_may_approve(
+            reply.source, target, state
+        ):
+            _write_outbound_event(
+                {
+                    "type": "send_message",
+                    "category": "info_request",
+                    "payload": {
+                        "to": reply.source,
+                        "subject": f"Not authorized to approve proposal {target.id}",
+                        "body": (
+                            "You are not authorized to approve this request. "
+                            "Only the project manager or tech lead can approve, "
+                            "unless this request was specifically addressed to you."
+                        ),
+                    },
+                },
+                source="agent:auth-gate",
+                source_event_id=reply.id,
+                thread_id=thread_id,
+            )
+            unauthorized.append({"proposal_id": target.id, "sender": reply.source})
+            resolved_ids.add(res.proposal_id)
             continue
         if res.decision == "approve":
             events_now = storage.read_events()
@@ -1201,6 +1256,7 @@ def _resolve_approvals_from_reply(
         "composed": composed,
         "nudged": nudged,
         "escalated": escalated,
+        "unauthorized": unauthorized,
         "resolutions": result.to_dict()["resolutions"],
     }
 

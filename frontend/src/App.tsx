@@ -1,7 +1,8 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { Briefcase, CheckSquare, LayoutGrid, ListChecks, MessagesSquare, MonitorPlay } from 'lucide-react'
+import { CheckSquare, LayoutGrid, ListChecks, MessagesSquare, MonitorPlay } from 'lucide-react'
 import { AppShell } from './components/layout/AppShell'
 import { Placeholder } from './routes/Placeholder'
+import { Manager } from './routes/Manager'
 
 export default function App() {
   return (
@@ -12,10 +13,7 @@ export default function App() {
           path="/worker"
           element={<Placeholder title="My work" subtitle="Your tasks and what Shlomi needs from you." icon={CheckSquare} />}
         />
-        <Route
-          path="/manager"
-          element={<Placeholder title="Approvals" subtitle="Review and approve what Shlomi proposes." icon={Briefcase} />}
-        />
+        <Route path="/manager" element={<Manager />} />
         <Route
           path="/exec"
           element={<Placeholder title="Overview" subtitle="Project health, and ask Shlomi anything." icon={LayoutGrid} />}

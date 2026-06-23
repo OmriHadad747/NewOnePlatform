@@ -2055,3 +2055,48 @@ def test_reject_is_gated_for_unauthorized_sender(client, monkeypatch):
     assert len(approvals["unauthorized"]) == 1
     # proposal survives
     assert any(p["id"] == prop["id"] for p in client.get("/proposals").json())
+
+
+# ---------------------------------------------------------------------------
+# Review dedup: don't re-send a reminder for the same (rule, entity)
+# ---------------------------------------------------------------------------
+
+
+def test_review_dedup_does_not_resend_reminder(client):
+    """Running /review-state twice for the same open question sends only once."""
+    client.post("/events", json=_human_approval(
+        "evt_1",
+        _delta("create", "OpenQuestion", "api-access",
+               {"description": "Who owns API access?", "status": "open"}),
+    ))
+
+    first = client.post("/review-state").json()
+    assert len(first["executed"]) == 1
+
+    second = client.post("/review-state").json()
+    assert len(second["executed"]) == 0
+    assert len(second["issues"]) == 1  # issue still reported
+
+
+def test_review_dedup_resends_after_state_change(client):
+    """If the entity's state changes to a new rule, a new reminder is sent."""
+    client.post("/events", json=_human_approval(
+        "evt_1",
+        _delta("create", "Task", "t1",
+               {"title": "Deploy", "status": "blocked", "owner": "alice"}),
+    ))
+
+    first = client.post("/review-state").json()
+    assert len(first["executed"]) == 1
+    assert first["executed"][0]["payload"]["payload"]["review_rule"] == "blocked_task"
+
+    # Task moves from blocked -> in_progress: different review_rule
+    client.post("/events", json=_human_approval(
+        "evt_2",
+        _delta("update", "Task", "t1", {"status": "in_progress"}),
+    ))
+
+    second = client.post("/review-state").json()
+    in_progress = [e for e in second["executed"]
+                   if e["payload"]["payload"].get("review_rule") == "in_progress_task"]
+    assert len(in_progress) == 1

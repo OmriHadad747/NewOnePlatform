@@ -1653,6 +1653,20 @@ def extract(
         raise HTTPException(status_code=502, detail=f"extraction failed: {exc}") from exc
 
 
+def _already_reminded(events: list[Event]) -> set[tuple[str, str]]:
+    """Collect (review_rule, entity_id) pairs that already have a message_sent."""
+    sent: set[tuple[str, str]] = set()
+    for e in events:
+        if e.type != "message_sent":
+            continue
+        p = e.payload
+        rule = p.get("review_rule") or p.get("payload", {}).get("review_rule")
+        eid = p.get("entity_id") or p.get("payload", {}).get("entity_id")
+        if rule and eid:
+            sent.add((rule, eid))
+    return sent
+
+
 @app.post("/review-state")
 def review_state_endpoint() -> dict:
     events = storage.read_events()
@@ -1667,7 +1681,12 @@ def review_state_endpoint() -> dict:
     if not result.actions:
         return {"issues": issues, "executed": [], "proposal": None}
 
-    auto_actions = [a for a in result.actions if a["category"] == "info_request"]
+    already = _already_reminded(events)
+    auto_actions = [
+        a for a in result.actions
+        if a["category"] == "info_request"
+        and (a["payload"].get("review_rule"), a["payload"].get("entity_id")) not in already
+    ]
     consequential_actions = [a for a in result.actions if a["category"] == "consequential"]
 
     executed = [
@@ -1678,7 +1697,6 @@ def review_state_endpoint() -> dict:
     proposal = None
     if consequential_actions:
         _propose_review_actions(consequential_actions, "review:rules", "review-state")
-        # Return the proposal we just wrote for the response.
         proposals = _pending_proposals(storage.read_events())
         if proposals:
             proposal = asdict(proposals[-1])

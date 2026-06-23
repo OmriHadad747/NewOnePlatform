@@ -8,7 +8,7 @@ import { EntityDrawer, type EntitySelection } from '../components/board/EntityDr
 import { PageContainer, PageHeader } from '../components/PageHeader'
 import { Card, CardHeader, EmptyState, ErrorState, Avatar, Skeleton, StatusBadge } from '../components/ui'
 import { BUCKETS, buildBoard, type TaskItem } from '../lib/board'
-import { fmtDate, personLabel, relativeDue, severity, taskStatus, toneClasses, questionStatus } from '../lib/format'
+import { personLabel, relativeDue, severity, taskStatus, toneClasses, questionStatus } from '../lib/format'
 import { AGENT_NAME } from '../lib/persona'
 import { useProjectState } from '../lib/queries'
 import type { Entity, EntityType } from '../lib/types'
@@ -172,20 +172,23 @@ export function Board() {
 function TaskCard({ item, onOpen }: { item: TaskItem; onOpen: () => void }) {
   const f = item.entity.fields
   const due = relativeDue(f.due_date)
+  const status = taskStatus(f.status)
+  const owner = f.owner ?? f.assignee
   return (
     <button
       onClick={onOpen}
-      className="group rounded-xl border border-line bg-surface p-3.5 text-left shadow-card-sm transition-all hover:-translate-y-0.5 hover:shadow-card"
+      aria-label={`${f.title || item.id} — ${status.label}${owner ? `, owned by ${personLabel(owner)}` : ''}${due.label ? `, due ${due.label}` : ''}`}
+      className="group rounded-xl border border-line bg-surface p-3.5 text-left shadow-card-sm transition-all hover:-translate-y-0.5 hover:shadow-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
     >
       <p className="text-[13px] font-semibold leading-snug text-ink">{f.title || item.id}</p>
       <div className="mt-2.5 flex items-center gap-2">
-        <StatusBadge status={taskStatus(f.status)} />
+        <StatusBadge status={status} />
         {due.label && (
           <span className={`text-[11.5px] font-medium ${due.overdue ? 'text-red' : due.soon ? 'text-amber' : 'text-faint'}`}>
-            {fmtDate(f.due_date)}
+            {due.label}
           </span>
         )}
-        {(f.owner ?? f.assignee) && <Avatar name={f.owner ?? f.assignee} size="xs" className="ml-auto" />}
+        {owner && <Avatar name={owner} size="xs" className="ml-auto" />}
       </div>
       {item.blockedBy.length > 0 && (
         <div className="mt-2.5 flex items-center gap-1.5 rounded-lg bg-red-soft px-2 py-1 text-[11px] font-medium text-red">

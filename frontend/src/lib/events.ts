@@ -48,11 +48,14 @@ export function describeEvent(e: AipmEvent): EventDescription {
         detail: summarizeDeltas(e.payload?.deltas ?? []) || clip(e.payload?.rationale),
       }
     }
-    case 'human_approval':
+    case 'human_approval': {
+      const summary = summarizeDeltas(e.payload?.deltas ?? [])
       return {
         title: e.payload?.amended ? 'Recorded a partial outcome' : 'Approved',
-        detail: summarizeDeltas(e.payload?.deltas ?? []),
+        // A ticket-batch sign-off applies no deltas — say so rather than blank.
+        detail: summary || `${AGENT_NAME} signed off; fanned out for confirmation`,
       }
+    }
     case 'proposal_rejected':
       return { title: 'Proposal declined', detail: e.payload?.reason ? clip(e.payload.reason) : undefined }
     case 'ticket_opened': {

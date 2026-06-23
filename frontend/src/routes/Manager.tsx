@@ -23,8 +23,11 @@ export function Manager() {
   const reply = useAddRawEvent()
   const toast = useToast()
   const [busyId, setBusyId] = useState<string | null>(null)
+  // Proposals resolved this session — hidden immediately so a card can't be
+  // acted on twice in the window before the poll/invalidation catches up.
+  const [resolvedIds, setResolvedIds] = useState<Set<string>>(new Set())
 
-  const proposals = proposalsQ.data ?? []
+  const proposals = (proposalsQ.data ?? []).filter((p) => !resolvedIds.has(p.id))
 
   const send = async (proposal: Proposal, text: string) => {
     const thread_id = proposal.payload.thread_id
@@ -40,6 +43,12 @@ export function Manager() {
       })
       const outcome = interpretApprovals(res.approvals)
       toast[outcome.kind](outcome.title, outcome.description)
+      // Hide the card only if the engine actually closed it (a follow-up/defer
+      // leaves it pending, so keep it visible to act on again).
+      const a = res.approvals
+      const settled =
+        a && ['approved', 'rejected', 'amended', 'revised', 'fanned_out'].some((k) => a[k]?.length)
+      if (settled) setResolvedIds((s) => new Set(s).add(proposal.id))
     } catch {
       toast.error(
         `${AGENT_NAME} didn't respond`,

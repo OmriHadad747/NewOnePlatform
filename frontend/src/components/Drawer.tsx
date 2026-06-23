@@ -17,12 +17,15 @@ export function Drawer({
   children: ReactNode
 }) {
   const restoreRef = useRef<HTMLElement | null>(null)
+  const panelRef = useRef<HTMLElement>(null)
   useEffect(() => {
     if (!open) return
     restoreRef.current = document.activeElement as HTMLElement
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
     document.addEventListener('keydown', onKey)
     document.body.style.overflow = 'hidden'
+    // Move focus into the panel so keyboard users aren't left behind the backdrop.
+    panelRef.current?.querySelector<HTMLElement>('button, [href], textarea, input')?.focus()
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = ''
@@ -42,6 +45,7 @@ export function Drawer({
             className="absolute inset-0 bg-black/40 backdrop-blur-sm"
           />
           <motion.aside
+            ref={panelRef}
             role="dialog"
             aria-modal="true"
             initial={{ x: '100%' }}

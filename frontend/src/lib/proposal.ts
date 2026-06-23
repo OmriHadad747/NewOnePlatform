@@ -89,12 +89,18 @@ export interface ActionView {
 export function describeAction(a: Action): ActionView {
   const meta = ACTION_META[a.type] ?? { icon: Send, tone: 'muted' as Tone, verb: titlecase(a.type) }
   const p = a.payload ?? {}
+  // For a ticket the owner is the most decision-relevant detail; otherwise the
+  // reason/body explains the action.
+  const detail =
+    a.type === 'open_ticket' && p.owner
+      ? `Owner: ${personLabel(p.owner)}`
+      : p.reason || p.body || undefined
   return {
     icon: meta.icon,
     tone: meta.tone,
     verb: meta.verb,
     label: p.title || p.subject || titlecase(p.entity_id || p.task_id || a.type),
-    detail: p.reason || p.body || undefined,
+    detail,
   }
 }
 
@@ -113,6 +119,8 @@ export function proposalKind(p: Proposal): ProposalKind {
   if (actions.some((a) => a.type === 'raise_flag' || a.type === 'escalate_to_management'))
     return { label: 'Needs sign-off', tone: 'amber' }
   if (actions.some((a) => a.type === 'open_ticket')) return { label: 'Open ticket', tone: 'teal' }
+  // Any other consequential action still needs explicit sign-off — signal it.
+  if (actions.some((a) => a.category === 'consequential')) return { label: 'Needs sign-off', tone: 'amber' }
   return { label: 'Proposed change', tone: 'accent' }
 }
 
@@ -149,6 +157,6 @@ export function approverFor(p: Proposal, meta?: { pm?: string; tech_lead?: strin
     meta?.pm ||
     meta?.tech_lead ||
     (meta?.team && meta.team[0]) ||
-    'pm@project'
+    'team' // matches backend _approval_recipient so recorded identities align
   )
 }

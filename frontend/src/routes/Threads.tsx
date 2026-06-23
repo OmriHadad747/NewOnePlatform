@@ -87,7 +87,7 @@ function Conversation({ thread }: { thread: Thread }) {
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto bg-grain p-5">
         {thread.messages.map((m, i) => (
-          <div key={i} className={cn('flex max-w-[80%] gap-2.5', m.isAgent ? 'self-start' : 'flex-row-reverse self-end')}>
+          <div key={`${m.timestamp}-${m.sender}-${i}`} className={cn('flex max-w-[80%] gap-2.5', m.isAgent ? 'self-start' : 'flex-row-reverse self-end')}>
             {m.isAgent ? (
               <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-accent-soft text-accent">
                 <Sparkles className="size-4" />

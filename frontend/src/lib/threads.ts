@@ -85,7 +85,11 @@ export function reconstructThreads(events: AipmEvent[], proposals: Proposal[] = 
     .sort((a, b) => (a.lastTimestamp < b.lastTimestamp ? 1 : -1))
 }
 
-export const threadTitle = (t: Thread) =>
-  t.subject.replace(/^(Re:|Approval needed:|Quick check before I record this:)\s*/i, '').trim() ||
-  t.participants.map(personLabel).join(', ') ||
-  'Conversation'
+// Strip the agent's templated subject prefixes for a clean conversation title.
+const SUBJECT_PREFIXES =
+  /^(Re:|Approval needed:|Quick check before I record this:|Quick check:|Escalation:|Before I record this[^:]*:|I think I modeled this wrong[^:]*:|Update on the correction[^:]*:?|This thread is closed[^:]*:?)\s*/i
+
+export const threadTitle = (t: Thread) => {
+  const cleaned = t.subject.replace(SUBJECT_PREFIXES, '').trim()
+  return cleaned || t.participants.map(personLabel).join(', ') || 'Conversation'
+}

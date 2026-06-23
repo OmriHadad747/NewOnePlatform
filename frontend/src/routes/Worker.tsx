@@ -4,7 +4,7 @@
 // same channel a worker would answer Shlomi on for real.
 
 import { CheckCircle2, Inbox, Send, Sparkles } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { EntityDrawer, type EntitySelection } from '../components/board/EntityDrawer'
 import { PageContainer, PageHeader } from '../components/PageHeader'
 import { useToast } from '../components/Toast'
@@ -16,12 +16,18 @@ import { reconstructThreads, threadTitle } from '../lib/threads'
 import type { Entity, EntityType } from '../lib/types'
 
 export function Worker() {
-  const { persona } = usePersona()
+  const { persona, setIdentity } = usePersona()
   const { data: project } = useProject()
   const { data: state, isLoading } = useProjectState({ poll: true })
   const { data: events } = useEvents({ poll: true })
   const { data: proposals } = useProposals({ poll: true })
   const me = persona.identity || project?.team?.[0] || ''
+
+  // Make the active identity explicit rather than silently defaulting: persist
+  // it so replies are attributed to a known person and the switcher shows who.
+  useEffect(() => {
+    if (!persona.identity && project?.team?.[0]) setIdentity(project.team[0])
+  }, [persona.identity, project, setIdentity])
 
   const myTasks = useMemo(
     () => Object.entries(state?.Task ?? {}).filter(([, e]) => (e.fields.owner ?? e.fields.assignee) === me),
@@ -129,7 +135,7 @@ function AskCard({ thread, me }: { thread: ReturnType<typeof reconstructThreads>
 
   const send = async () => {
     const text = draft.trim()
-    if (!text) return
+    if (!text || reply.isPending) return
     try {
       await reply.mutateAsync({ type: 'message_received', text, source: me, channel: 'stub', thread_id: thread.id })
       setDraft('')

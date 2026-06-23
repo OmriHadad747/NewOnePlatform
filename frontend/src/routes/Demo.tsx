@@ -16,7 +16,7 @@ import {
   StickyNote,
   Wand2,
 } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { PageContainer, PageHeader } from '../components/PageHeader'
 import { useToast } from '../components/Toast'
 import { ProposalCard } from '../components/proposals/ProposalCard'
@@ -83,14 +83,16 @@ export function Demo() {
   )
 }
 
-// Team + PM/tech-lead + a couple of common outside senders, deduped.
+// Team + PM/tech-lead, deduped. Memoized so the actor identity is stable.
 function useActors(): string[] {
   const { data: project } = useProject()
-  const set = new Set<string>()
-  ;(project?.team ?? []).forEach((m) => set.add(m))
-  if (project?.pm) set.add(project.pm)
-  if (project?.tech_lead) set.add(project.tech_lead)
-  return [...set]
+  return useMemo(() => {
+    const set = new Set<string>()
+    ;(project?.team ?? []).forEach((m) => set.add(m))
+    if (project?.pm) set.add(project.pm)
+    if (project?.tech_lead) set.add(project.tech_lead)
+    return [...set]
+  }, [project])
 }
 
 function ActorPicker({
@@ -368,7 +370,7 @@ function StateSnapshot() {
 
 function LiveStream() {
   const { data: events } = useEvents({ poll: true })
-  const recent = (events ?? []).slice().reverse().slice(0, 10)
+  const recent = useMemo(() => (events ?? []).slice().reverse().slice(0, 10), [events])
   return (
     <Card className="flex flex-col">
       <CardHeader icon={Radio} title="Event stream" action={<span className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-green"><span className="size-1.5 animate-pulse rounded-full bg-green" /> Live</span>} />

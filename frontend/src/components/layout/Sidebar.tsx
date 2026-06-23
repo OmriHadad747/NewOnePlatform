@@ -49,7 +49,7 @@ const NAV_BY_ROLE: Record<Role, (badges: { proposals: number }) => NavItem[]> = 
   ],
 }
 
-export function Sidebar() {
+export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const { persona } = usePersona()
   const { data: proposals } = useProposals({ poll: true })
   const items = NAV_BY_ROLE[persona.role]({ proposals: proposals?.length ?? 0 })
@@ -71,6 +71,7 @@ export function Sidebar() {
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={onNavigate}
             className={({ isActive }) =>
               cn(
                 'group flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13.5px] font-semibold transition-colors',

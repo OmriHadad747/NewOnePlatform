@@ -45,7 +45,7 @@ export function Exec() {
 
       <div className={cn('mb-6 flex flex-wrap items-center gap-x-8 gap-y-4 rounded-2xl border p-5', c.soft)}>
         <div className="flex items-center gap-3">
-          <span className={cn('flex size-11 items-center justify-center rounded-2xl', toneClasses(stats.health.tone).dot, 'text-white')}>
+          <span className={cn('flex size-11 items-center justify-center rounded-2xl bg-surface', toneClasses(stats.health.tone).text)}>
             <Sparkles className="size-6" />
           </span>
           <div>
@@ -85,6 +85,11 @@ function AskShlomi() {
   const ask = useAsk()
   const seq = useRef(0)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollToEnd = () =>
+    requestAnimationFrame(() => {
+      const el = scrollRef.current
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
 
   const submit = async (question: string) => {
     const q = question.trim()
@@ -92,14 +97,14 @@ function AskShlomi() {
     const id = ++seq.current
     setTurns((t) => [...t, { id, question }])
     setInput('')
-    requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: 9e9, behavior: 'smooth' }))
+    scrollToEnd()
     try {
       const res = await ask.mutateAsync(q)
       setTurns((t) => t.map((x) => (x.id === id ? { ...x, answer: res.answer } : x)))
     } catch {
       setTurns((t) => t.map((x) => (x.id === id ? { ...x, failed: true } : x)))
     } finally {
-      requestAnimationFrame(() => scrollRef.current?.scrollTo({ top: 9e9, behavior: 'smooth' }))
+      scrollToEnd()
     }
   }
 

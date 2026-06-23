@@ -80,7 +80,7 @@ export function PersonaSwitcher() {
         <span className="flex size-7 items-center justify-center rounded-lg bg-accent-soft text-accent">
           <Icon className="size-4" />
         </span>
-        <span className="text-left leading-tight">
+        <span className="hidden text-left leading-tight sm:block">
           <span className="block text-[10px] font-semibold uppercase tracking-wide text-faint">Viewing as</span>
           <span className="block text-[13px] font-bold text-ink">
             {ROLE_META[persona.role].label}

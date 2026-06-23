@@ -4,7 +4,7 @@
 
 import { motion } from 'framer-motion'
 import { Loader2, type LucideIcon } from 'lucide-react'
-import type { ButtonHTMLAttributes, HTMLAttributes, ReactNode } from 'react'
+import { forwardRef, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from 'react'
 import { cn } from '../lib/cn'
 import { avatarTone, initials, toneClasses, type Tone, type StatusView } from '../lib/format'
 
@@ -70,14 +70,13 @@ export function Button({
   )
 }
 
-export function IconButton({
-  icon: Icon,
-  className,
-  label,
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label?: string }) {
+export const IconButton = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & { icon: LucideIcon; label?: string }
+>(function IconButton({ icon: Icon, className, label, ...props }, ref) {
   return (
     <button
+      ref={ref}
       {...props}
       aria-label={label}
       title={label}
@@ -90,7 +89,7 @@ export function IconButton({
       <Icon className="size-[18px]" />
     </button>
   )
-}
+})
 
 /* ------------------------------------------------------------------ Card */
 

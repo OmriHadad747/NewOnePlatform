@@ -2055,3 +2055,90 @@ def test_reject_is_gated_for_unauthorized_sender(client, monkeypatch):
     assert len(approvals["unauthorized"]) == 1
     # proposal survives
     assert any(p["id"] == prop["id"] for p in client.get("/proposals").json())
+
+
+# ---------------------------------------------------------------------------
+# Info-request throttle
+# ---------------------------------------------------------------------------
+
+
+def test_info_request_throttle_promotes_excess_to_consequential(client, monkeypatch):
+    """When extraction yields more info_requests than the cap, excess ones
+    become consequential and land in the proposal instead of auto-executing."""
+    monkeypatch.setenv("AIPM_MAX_INFO_REQUESTS", "2")
+    client.post("/project", json={"name": "Throttle test"})
+    raw = "Lots of things to check."
+    client.post("/events", json=_raw_event("raw_t", raw))
+
+    actions = [
+        ProposedAction(
+            "send_message", "info_request",
+            {"to": f"person{i}@co.com", "subject": f"Q{i}"},
+            source_span="things to check",
+        )
+        for i in range(6)
+    ]
+    _use_provider(ExtractionResult(actions=actions))
+    resp = client.post("/extract", json={"source_event_id": "raw_t"}).json()
+
+    assert len(resp["executed"]) == 2
+    proposal = resp["proposal"]
+    assert proposal is not None
+    promoted = [
+        a for a in proposal["payload"]["actions"]
+        if a["type"] == "send_message"
+    ]
+    assert len(promoted) == 4
+    for a in promoted:
+        assert a["category"] == "consequential"
+
+
+def test_info_request_throttle_no_cap_sends_all(client, monkeypatch):
+    """With cap=0 (disabled), all info_requests auto-execute."""
+    monkeypatch.setenv("AIPM_MAX_INFO_REQUESTS", "0")
+    client.post("/project", json={"name": "No cap"})
+    raw = "Lots of things."
+    client.post("/events", json=_raw_event("raw_nc", raw))
+
+    actions = [
+        ProposedAction(
+            "send_message", "info_request",
+            {"to": f"p{i}@co.com", "subject": f"Q{i}"},
+            source_span="things",
+        )
+        for i in range(8)
+    ]
+    _use_provider(ExtractionResult(actions=actions))
+    resp = client.post("/extract", json={"source_event_id": "raw_nc"}).json()
+
+    assert len(resp["executed"]) == 8
+
+
+def test_review_state_throttle(client, monkeypatch):
+    """The /review-state endpoint also respects the info_request cap."""
+    monkeypatch.setenv("AIPM_MAX_INFO_REQUESTS", "1")
+    client.post("/project", json={
+        "name": "Review throttle",
+        "start_date": "2025-01-01",
+        "end_date": "2025-06-01",
+    })
+    # Create two tasks with overdue dates to trigger two info_request actions.
+    client.post("/events", json={
+        "id": "seed", "type": "human_approval",
+        "timestamp": "2025-01-01T00:00:00Z", "source": "tester",
+        "payload": {
+            "deltas": [
+                _delta("create", "Task", "t1", {"title": "T1", "status": "open", "due_date": "2024-12-01"}),
+                _delta("create", "Task", "t2", {"title": "T2", "status": "open", "due_date": "2024-12-02"}),
+            ],
+            "actions": [],
+        },
+    })
+    resp = client.post("/review-state").json()
+    assert len(resp["executed"]) <= 1
+    if resp["proposal"]:
+        promoted = [
+            a for a in resp["proposal"]["payload"]["actions"]
+            if a["type"] == "send_message"
+        ]
+        assert len(promoted) >= 1

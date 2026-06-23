@@ -85,6 +85,23 @@ def _new_thread_id() -> str:
     return f"thr_{uuid.uuid4().hex[:12]}"
 
 
+def _throttle_info_requests(
+    auto: list[dict], consequential: list[dict]
+) -> tuple[list[dict], list[dict]]:
+    """Apply the per-event info_request cap.
+
+    Returns (auto_to_execute, consequential_with_overflow). Excess
+    info_requests are promoted to consequential so they need approval.
+    """
+    cap = config.max_info_requests()
+    if not cap or len(auto) <= cap:
+        return auto, consequential
+    promoted = auto[cap:]
+    for a in promoted:
+        a["category"] = "consequential"
+    return auto[:cap], consequential + promoted
+
+
 def _write_outbound_event(
     action: dict, source: str, source_event_id: str, thread_id: str | None = None
 ) -> dict:
@@ -1422,7 +1439,9 @@ def _run_extraction(source: Event, events: list[Event], provider: ExtractionProv
     # no human_approval. `consequential` actions stay in the proposal,
     # awaiting approval.
     auto_actions = [a for a in payload["actions"] if a["category"] == "info_request"]
-    payload["actions"] = [a for a in payload["actions"] if a["category"] == "consequential"]
+    consequential = [a for a in payload["actions"] if a["category"] == "consequential"]
+    auto_actions, consequential = _throttle_info_requests(auto_actions, consequential)
+    payload["actions"] = consequential
     payload["source_event_id"] = source.id
     payload["provider"] = provider.name
     payload["thread_id"] = _new_thread_id()  # the conversation this proposal owns
@@ -1669,6 +1688,7 @@ def review_state_endpoint() -> dict:
 
     auto_actions = [a for a in result.actions if a["category"] == "info_request"]
     consequential_actions = [a for a in result.actions if a["category"] == "consequential"]
+    auto_actions, consequential_actions = _throttle_info_requests(auto_actions, consequential_actions)
 
     executed = [
         _write_outbound_event(a, source="agent:review", source_event_id="review-state")

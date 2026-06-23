@@ -81,6 +81,20 @@ def max_thread_turns() -> int:
         return 3
 
 
+def max_info_requests() -> int:
+    """Cap on info_request actions auto-executed per single inbound event.
+
+    When extraction or review produces more info_requests than this, excess
+    ones are promoted to consequential so they land in the proposal and need
+    human approval before sending. Prevents a noisy input from fanning out a
+    burst of messages.
+    """
+    try:
+        return max(0, int(os.environ.get("AIPM_MAX_INFO_REQUESTS", "5")))
+    except ValueError:
+        return 5
+
+
 def gemini_api_key() -> str | None:
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 

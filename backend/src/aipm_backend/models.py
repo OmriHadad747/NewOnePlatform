@@ -24,6 +24,12 @@ class ExtractRequest(BaseModel):
     source_event_id: str
 
 
+class AskRequest(BaseModel):
+    # A stakeholder's free-language question about the project, answered from
+    # the current projected state (see POST /ask).
+    question: str
+
+
 class ProjectIn(BaseModel):
     name: str
     description: str | None = None

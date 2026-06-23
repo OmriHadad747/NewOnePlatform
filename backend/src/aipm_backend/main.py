@@ -51,6 +51,7 @@ from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException
 
 from aipm.approval import PendingProposal, build_approval_prompt
+from aipm.briefing import build_briefing_prompt
 from aipm.conflicts import (
     ConflictWarning,
     author_clarifiable,
@@ -70,7 +71,7 @@ from aipm.schema import normalize_payload
 from aipm_backend import config, storage
 from aipm_backend.channels import get_channel
 from aipm_backend.extraction import get_provider, get_provider_optional
-from aipm_backend.models import EventIn, ExtractRequest, ProjectIn, serialize_state
+from aipm_backend.models import AskRequest, EventIn, ExtractRequest, ProjectIn, serialize_state
 
 app = FastAPI(title="AI PM Backend")
 
@@ -1394,6 +1395,32 @@ def review_state_endpoint() -> dict:
         _ask_for_approval(proposal_event, storage.read_events())
 
     return {"issues": issues, "executed": executed, "proposal": proposal}
+
+
+@app.post("/ask")
+def ask(
+    req: AskRequest,
+    provider: ExtractionProvider = Depends(get_provider),
+) -> dict:
+    """Answer a stakeholder's free-language question from the current state.
+
+    The briefing is grounded in the projected state (the model is told to rely
+    on it and to say so when it can't answer). Prose, not JSON -- it's read by a
+    human. A provider failure is surfaced as a 502 so the UI can retry kindly.
+    """
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question must not be empty")
+
+    state = project(storage.read_events())
+    prompt = build_briefing_prompt(question, state)
+    try:
+        answer = provider.answer_question(prompt)
+    except Exception as exc:  # provider/network failure -> 502
+        raise HTTPException(status_code=502, detail=f"briefing failed: {exc}") from exc
+    if not answer.strip():
+        raise HTTPException(status_code=502, detail="the model returned an empty answer")
+    return {"answer": answer.strip(), "model": provider.name}
 
 
 @app.get("/proposals")

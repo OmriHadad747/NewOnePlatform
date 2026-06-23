@@ -1,0 +1,196 @@
+@import 'tailwindcss';
+
+@import '@fontsource-variable/plus-jakarta-sans';
+@import '@fontsource-variable/jetbrains-mono';
+
+/* Dark mode is class-driven (we toggle `.dark` on <html>), so the user's
+   choice persists and the demo can switch it live. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Design language: "Warm & approachable".
+  Every color is a semantic token so light/dark stay perfectly in sync and the
+  whole UI shares one palette, one set of status colors, one shadow scale.
+  Status colors (prog/block/todo/done, risk severities) are defined ONCE here
+  and consumed everywhere, which is what keeps tags/positions consistent.
+*/
+:root {
+  --bg: #faf6f0;
+  --surface: #fffdf9;
+  --surface-2: #f6efe6;
+  --surface-3: #efe6d8;
+  --ink: #38332d;
+  --ink-soft: #5f574d;
+  --muted: #8a8175;
+  --faint: #b1a89c;
+  --line: #ece2d4;
+  --line-2: #f3ece1;
+
+  --accent: #df7f2c;
+  --accent-hover: #c96f22;
+  --accent-ink: #ffffff;
+  --accent-soft: #fbe9d6;
+  --accent-ring: rgba(223, 127, 44, 0.35);
+
+  --teal: #109485;
+  --teal-soft: #dcf1ed;
+  --green: #3f9f5b;
+  --green-soft: #e3f1e7;
+  --red: #d65d4c;
+  --red-soft: #fae5e1;
+  --amber: #c98f1d;
+  --amber-soft: #f8ecc9;
+  --blue: #3d83cc;
+  --blue-soft: #e5eff9;
+  --violet: #8a6bd4;
+  --violet-soft: #efe8fb;
+
+  --shadow-sm: 0 1px 2px rgba(122, 92, 52, 0.05), 0 1px 3px rgba(122, 92, 52, 0.06);
+  --shadow: 0 2px 6px rgba(122, 92, 52, 0.06), 0 8px 24px rgba(122, 92, 52, 0.08);
+  --shadow-lg: 0 12px 40px rgba(122, 92, 52, 0.16);
+  --shadow-pop: 0 6px 16px rgba(122, 92, 52, 0.12), 0 16px 48px rgba(122, 92, 52, 0.18);
+}
+
+.dark {
+  --bg: #181410;
+  --surface: #221d17;
+  --surface-2: #2a241d;
+  --surface-3: #332c23;
+  --ink: #f1e9dd;
+  --ink-soft: #cfc4b4;
+  --muted: #a09586;
+  --faint: #6f6557;
+  --line: #332c23;
+  --line-2: #2a241d;
+
+  --accent: #ef9b4f;
+  --accent-hover: #f3a961;
+  --accent-ink: #2a1a0a;
+  --accent-soft: #3a2916;
+  --accent-ring: rgba(239, 155, 79, 0.35);
+
+  --teal: #3cbcaa;
+  --teal-soft: #143029;
+  --green: #58b873;
+  --green-soft: #182f1e;
+  --red: #e4806f;
+  --red-soft: #36201b;
+  --amber: #dcaa4c;
+  --amber-soft: #322713;
+  --blue: #69a4df;
+  --blue-soft: #182636;
+  --violet: #a98ce6;
+  --violet-soft: #241d36;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 8px 28px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 8px 20px rgba(0, 0, 0, 0.45), 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+
+/* Map tokens to Tailwind utilities. `inline` makes utilities reference the CSS
+   vars directly, so dark mode is a pure variable swap — no doubled classes. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+
+  --color-teal: var(--teal);
+  --color-teal-soft: var(--teal-soft);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-red: var(--red);
+  --color-red-soft: var(--red-soft);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-blue: var(--blue);
+  --color-blue-soft: var(--blue-soft);
+  --color-violet: var(--violet);
+  --color-violet-soft: var(--violet-soft);
+
+  --font-sans: 'Plus Jakarta Sans Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1.75rem;
+
+  --shadow-card: var(--shadow);
+  --shadow-card-sm: var(--shadow-sm);
+  --shadow-card-lg: var(--shadow-lg);
+  --shadow-pop: var(--shadow-pop);
+}
+
+@layer base {
+  * {
+    border-color: var(--line);
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--ink);
+  }
+  /* Warm, slim scrollbars that match the surface rather than the OS default. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-3) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--surface-3);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@layer utilities {
+  .bg-grain {
+    background-image: radial-gradient(circle at 1px 1px, rgba(122, 92, 52, 0.05) 1px, transparent 0);
+    background-size: 22px 22px;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  @keyframes pulse-ring {
+    0% { box-shadow: 0 0 0 0 var(--accent-ring); }
+    70% { box-shadow: 0 0 0 6px transparent; }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
+  .animate-pulse-ring {
+    animation: pulse-ring 2s infinite;
+  }
+  @keyframes shimmer {
+    100% { transform: translateX(100%); }
+  }
+}

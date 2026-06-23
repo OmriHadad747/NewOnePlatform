@@ -1657,3 +1657,33 @@ def _thread_of(client, proposal_id):
         if e["type"] == "agent_proposal" and e["id"] == proposal_id:
             return e["payload"].get("thread_id")
     return None
+
+
+# --- POST /ask : executive free-language briefing ------------------------
+
+def test_ask_answers_from_state(client):
+    app.dependency_overrides[get_provider] = lambda: StaticProvider(
+        ExtractionResult(), answer="We're on track; one task is blocked on the vendor."
+    )
+    client.post("/project", json={"name": "Apollo"})
+    res = client.post("/ask", json={"question": "What's the status?"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["answer"] == "We're on track; one task is blocked on the vendor."
+    assert body["model"] == "static"
+
+
+def test_ask_rejects_empty_question(client):
+    app.dependency_overrides[get_provider] = lambda: StaticProvider(
+        ExtractionResult(), answer="anything"
+    )
+    res = client.post("/ask", json={"question": "   "})
+    assert res.status_code == 400
+
+
+def test_ask_502_on_empty_answer(client):
+    app.dependency_overrides[get_provider] = lambda: StaticProvider(
+        ExtractionResult(), answer=""
+    )
+    res = client.post("/ask", json={"question": "What's the status?"})
+    assert res.status_code == 502

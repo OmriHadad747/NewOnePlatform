@@ -143,6 +143,19 @@ class GeminiProvider:
         )
         return parse_message_json(response.text)
 
+    def answer_question(self, prompt: ExtractionPrompt) -> str:
+        from google import genai
+        from google.genai import types as genai_types
+
+        client = genai.Client(api_key=self._api_key)
+        response = client.models.generate_content(
+            model=self._model,
+            contents=prompt.suffix,
+            # Prose answer, not JSON -- this is a briefing for a human to read.
+            config=genai_types.GenerateContentConfig(system_instruction=prompt.prefix),
+        )
+        return (response.text or "").strip()
+
 
 class ClaudeProvider:
     """Extraction via Anthropic Claude (default: Haiku). The SDK is imported
@@ -214,6 +227,24 @@ class ClaudeProvider:
         text = "".join(block.text for block in response.content if block.type == "text")
         return parse_message_json(text)
 
+    def answer_question(self, prompt: ExtractionPrompt) -> str:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=self._api_key)
+        response = client.messages.create(
+            model=self._model,
+            max_tokens=1024,
+            system=[
+                {
+                    "type": "text",
+                    "text": prompt.prefix,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+            messages=[{"role": "user", "content": prompt.suffix}],
+        )
+        return "".join(block.text for block in response.content if block.type == "text").strip()
+
 
 class StaticProvider:
     """Returns a fixed result -- used by tests and for offline/dry runs."""
@@ -225,12 +256,14 @@ class StaticProvider:
         result: ExtractionResult,
         approval_result: ApprovalResult | None = None,
         composed_message: ComposedMessage | None = None,
+        answer: str = "",
     ) -> None:
         self._result = result
         self._approval_result = approval_result or ApprovalResult()
         # Default to "nothing to add" so a test that doesn't care about the
         # messaging step never accidentally fires a composed reply.
         self._composed_message = composed_message or ComposedMessage(send=False)
+        self._answer = answer
 
     def extract(self, prompt: ExtractionPrompt) -> ExtractionResult:
         return self._result
@@ -240,6 +273,9 @@ class StaticProvider:
 
     def compose_message(self, prompt: ExtractionPrompt) -> ComposedMessage:
         return self._composed_message
+
+    def answer_question(self, prompt: ExtractionPrompt) -> str:
+        return self._answer
 
 
 def _build_concrete(name: str) -> ExtractionProvider:

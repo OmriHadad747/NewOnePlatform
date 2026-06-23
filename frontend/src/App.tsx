@@ -1,13 +1,12 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { MonitorPlay } from 'lucide-react'
 import { AppShell } from './components/layout/AppShell'
-import { Placeholder } from './routes/Placeholder'
 import { Manager } from './routes/Manager'
 import { Board } from './routes/Board'
 import { Timeline } from './routes/Timeline'
 import { Threads } from './routes/Threads'
 import { Worker } from './routes/Worker'
 import { Exec } from './routes/Exec'
+import { Demo } from './routes/Demo'
 
 export default function App() {
   return (
@@ -17,10 +16,7 @@ export default function App() {
         <Route path="/worker" element={<Worker />} />
         <Route path="/manager" element={<Manager />} />
         <Route path="/exec" element={<Exec />} />
-        <Route
-          path="/demo"
-          element={<Placeholder title="Demo console" subtitle="Drive the whole platform live." icon={MonitorPlay} />}
-        />
+        <Route path="/demo" element={<Demo />} />
         <Route path="/board" element={<Board />} />
         <Route path="/timeline" element={<Timeline />} />
         <Route path="/threads" element={<Threads />} />

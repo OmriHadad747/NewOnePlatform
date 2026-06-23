@@ -344,6 +344,29 @@ def _cascade_done_tasks(deltas: list[dict], trigger_event_id: str) -> None:
         _write_outbound_event(notify, source="agent:cascade", source_event_id=approval.id)
 
 
+def _auto_escalate_flag(action: dict, trigger_event_id: str, state: ProjectState) -> None:
+    """When a flag is raised, auto-notify management (PM + tech-lead)."""
+    meta = state.meta
+    recipients = [r for r in [meta.get("pm"), meta.get("tech_lead")] if r]
+    if not recipients:
+        return
+    payload = action.get("payload", {})
+    entity_id = payload.get("entity_id", "unknown")
+    reason = payload.get("reason", "No details")
+    escalation = {
+        "type": "send_message",
+        "category": "info_request",
+        "payload": {
+            "to": ", ".join(recipients),
+            "subject": f"Flag escalation: {entity_id}",
+            "body": f"A flag has been raised and approved. {reason}",
+            "purpose": "escalation",
+            "flag_entity_id": entity_id,
+        },
+    }
+    _write_outbound_event(escalation, source="agent:escalate-flag", source_event_id=trigger_event_id)
+
+
 def _apply_approval(
     proposal: Event,
     events: list[Event],
@@ -389,6 +412,8 @@ def _apply_approval(
 
     for action in approval.payload["actions"]:
         _write_outbound_event(action, source="agent:approved", source_event_id=approval.id)
+        if action.get("type") == "raise_flag":
+            _auto_escalate_flag(action, approval.id, state)
 
     _cascade_done_tasks(deltas, approval.id)
     _auto_review_consequential(approval.id)

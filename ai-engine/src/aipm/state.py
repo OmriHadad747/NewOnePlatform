@@ -25,3 +25,16 @@ class ProjectState:
 
     def get(self, entity_type: str, entity_id: str) -> Entity | None:
         return self.entities.get(entity_type, {}).get(entity_id)
+
+    def open_flags(self) -> list[Action]:
+        """Flags that were raised but not yet resolved."""
+        resolved_entity_ids = {
+            a.payload.get("entity_id")
+            for a in self.actions
+            if a.type == "resolve_flag"
+        }
+        return [
+            a for a in self.actions
+            if a.type == "raise_flag"
+            and a.payload.get("entity_id") not in resolved_entity_ids
+        ]

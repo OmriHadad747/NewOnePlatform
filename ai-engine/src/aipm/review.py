@@ -149,7 +149,10 @@ def _check_in_progress_tasks(state: ProjectState, result: ReviewResult) -> None:
 
 
 def _check_unowned_high_risks(state: ProjectState, result: ReviewResult) -> None:
+    already_flagged = {a.payload.get("entity_id") for a in state.open_flags()}
     for rid, entity in state.entities.get("Risk", {}).items():
+        if rid in already_flagged:
+            continue
         status = (entity.fields.get("status") or "").lower()
         if status in _RESOLVED_RISK_STATUSES:
             continue

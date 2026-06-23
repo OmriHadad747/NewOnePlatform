@@ -36,6 +36,7 @@ ACTION_TYPE_OUTBOUND_EVENTS = {
     "send_message": "message_sent",
     "open_ticket": "ticket_opened",
     "raise_flag": "flag_raised",
+    "resolve_flag": "flag_resolved",
     "escalate_to_management": "report_to_management",
 }
 

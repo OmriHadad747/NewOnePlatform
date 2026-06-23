@@ -1712,3 +1712,70 @@ def test_task_done_resolves_downstream_deps(client, monkeypatch):
         e["type"] == "message_sent" and "unblocked" in e.get("payload", {}).get("payload", {}).get("subject", "")
         for e in client.get("/events").json()
     )
+
+
+# --- flag lifecycle -----------------------------------------------------------
+
+
+def test_flag_lifecycle_raise_escalate_resolve(client, monkeypatch):
+    """Full flag lifecycle: raise → auto-escalate to management → resolve."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "FlagTest", "pm": "pm@co.com", "tech_lead": "cto@co.com"})
+    # Create a high-severity risk with no owner → review will flag it
+    client.post("/events", json=_human_approval(
+        "setup",
+        _delta("create", "Risk", "outage-risk", {"severity": "high", "status": "open"}),
+    ))
+
+    # Review raises a flag proposal
+    review = client.post("/review-state").json()
+    assert review["proposal"] is not None
+    prop = review["proposal"]
+
+    # PM approves the flag
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(prop["id"], "approve", "raise it")]),
+    )
+    client.post("/events", json={
+        "id": "reply_1", "type": "message_received", "timestamp": "2025-01-02T00:00:00Z",
+        "source": "pm@co.com", "raw_text": "Yes, raise it.",
+        "payload": {"thread_id": prop["payload"]["thread_id"]},
+    })
+
+    events = client.get("/events").json()
+    # Flag was raised
+    assert any(e["type"] == "flag_raised" for e in events)
+    # Auto-escalation sent to management
+    escalation_msgs = [
+        e for e in events
+        if e["type"] == "message_sent"
+        and "escalation" in str(e.get("payload", {}).get("payload", {}).get("purpose", ""))
+    ]
+    assert escalation_msgs
+    assert "cto@co.com" in escalation_msgs[0]["payload"]["payload"]["to"]
+
+    # Now resolve: assign an owner to the risk (so the unowned check passes)
+    # and record a resolve_flag action.
+    client.post("/events", json=_human_approval(
+        "fix",
+        _delta("update", "Risk", "outage-risk", {"owner": "alice"}),
+        actions=[{
+            "type": "resolve_flag",
+            "category": "consequential",
+            "payload": {"entity_id": "outage-risk", "reason": "owner assigned"},
+            "provenance": {"asserted_by": "pm"},
+        }],
+    ))
+
+    # The direct POST path doesn't write outbound events (test shortcut),
+    # but the action IS in state — verify via state actions.
+    state = client.get("/state").json()
+    assert any(
+        a["type"] == "resolve_flag" and a["payload"]["entity_id"] == "outage-risk"
+        for a in state.get("actions", [])
+    )
+
+    # Review should no longer re-flag this risk (owner assigned + flag resolved)
+    review2 = client.post("/review-state").json()
+    assert review2["proposal"] is None

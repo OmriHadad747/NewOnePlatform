@@ -53,6 +53,7 @@ EVENT_TYPES = {
     "message_sent",
     "ticket_opened",
     "flag_raised",
+    "flag_resolved",
     "report_to_management",
 }
 
@@ -69,6 +70,7 @@ OUTBOUND_EVENT_TYPES = {
     "message_sent",
     "ticket_opened",
     "flag_raised",
+    "flag_resolved",
     "report_to_management",
 }
 

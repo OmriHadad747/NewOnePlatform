@@ -39,8 +39,8 @@ aipm state    # sanity: 8 tasks, 8 dependencies, 6 risks
 kickoff material and let the platform build the project, then approve it interactively.
 ```bash
 aipm init "Score model replacement" --start 2026-04-01 --end 2026-12-31 \
-  --team data-scientist analytics-engineer data-engineer backend-engineer legacy-owner \
-  --pm you@co.com
+  --team ds@co.com ae@co.com de@co.com be@co.com lo@co.com \
+  --pm pm@co.com
 aipm transcript "$(cat .claude/skills/run-aipm/examples/score-kickoff.md)"
 aipm proposals          # review the extracted owners/tasks/risks/deps, then approve
 ```
@@ -59,9 +59,9 @@ kickoff file for your own work material to simulate a real project.
      answers in-thread, then they decide) · **Propose a different structure** (agent
      drafts a revision for the PM) · **Leave it for now**
 
-   Deliver their words AS that person, verbatim:
+   Deliver their words AS that person, verbatim (use their **email**):
    ```bash
-   aipm message-in "<operator's exact words>" --from <that-person> --thread <thread>
+   aipm message-in "<operator's exact words>" --from <that-person@co.com> --thread <thread>
    ```
 3. **The platform may ask THEM something back** — on an ambiguous reply, or before
    committing a contradictory state (e.g. a task done while it keeps an active
@@ -75,4 +75,14 @@ kickoff file for your own work material to simulate a real project.
 - Extraction needs a provider key; without one, events log but nothing extracts.
 - State is derived from `$AIPM_EVENT_LOG` — point at that file to resume; delete it to reset.
 - A reply ON a thread resolves that proposal only; it is never re-mined for new work.
+- **`--from` must be an email address.** The authorization gate compares the sender's
+  email against PM / tech_lead / the proposal's designated approver. A bare name won't
+  match. Use the same emails you put in `--team`.
+- **Who can approve what.** PM and tech_lead can approve any proposal. Fan-out
+  ticket-confirmation proposals set an `approver` email — only that person (or
+  PM/tech_lead) can approve them. If neither PM nor tech_lead is configured,
+  the gate is permissive (anyone can approve).
+- **Team must be emails.** The identity resolver maps free-text person mentions
+  (e.g. "Dana") to the roster email. Bare-name team members have no email, so
+  the resolver can't use them. Always pass emails in `--team`.
 - Depth: `CLAUDE.md`, `backend/README.md`.

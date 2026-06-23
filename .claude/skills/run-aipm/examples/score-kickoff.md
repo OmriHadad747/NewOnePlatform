@@ -11,16 +11,17 @@ Python queue-consumer, then re-synced to BigQuery and reconciled so we can
 confirm every score actually landed.
 
 **Who's on it and what they own.**
-- The data scientist develops the new statistical scoring model, and later runs
-  parity validation (a shadow run against the old model).
-- The analytics engineer implements that model in BigQuery and builds the score
-  outbox/queue.
-- The data engineer owns the legacy↔BigQuery sync and the delivery reconciliation.
-- The backend engineer writes the Python publisher service that consumes the BQ
-  queue and calls the legacy service to persist scores.
-- The legacy owner does the legacy-side adaptations (exposing data for the sync,
-  accepting score write-backs). Heads up: they're also on day-to-day firefighting,
-  so their availability is limited.
+- Data Scientist (ds@co.com) develops the new statistical scoring model, and
+  later runs parity validation (a shadow run against the old model).
+- Analytics Engineer (ae@co.com) implements that model in BigQuery and builds the
+  score outbox/queue.
+- Data Engineer (de@co.com) owns the legacy↔BigQuery sync and the delivery
+  reconciliation.
+- Backend Engineer (be@co.com) writes the Python publisher service that consumes
+  the BQ queue and calls the legacy service to persist scores.
+- Legacy Owner (lo@co.com) does the legacy-side adaptations (exposing data for
+  the sync, accepting score write-backs). Heads up: they're also on day-to-day
+  firefighting, so their availability is limited.
 
 **How the pipeline fits together (this implies the order of work).**
 First the legacy owner has to do the legacy-side integration before the data

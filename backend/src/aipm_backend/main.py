@@ -268,6 +268,82 @@ def _auto_review_consequential(trigger_event_id: str) -> None:
     _ask_for_approval(proposal_event, storage.read_events())
 
 
+_DONE_STATUSES = frozenset({"done", "completed", "closed"})
+
+
+def _cascade_done_tasks(deltas: list[dict], trigger_event_id: str) -> None:
+    """When a task is marked done, resolve its downstream deps and notify unblocked owners."""
+    done_task_ids = {
+        d["entity_id"] for d in deltas
+        if d.get("entity_type") == "Task"
+        and d.get("fields", {}).get("status", "").lower() in _DONE_STATUSES
+    }
+    if not done_task_ids:
+        return
+
+    events = storage.read_events()
+    state = project(events)
+    dep_table = state.entities.get("Dependency", {})
+    task_table = state.entities.get("Task", {})
+
+    resolve_deltas: list[dict] = []
+    for dep_id, dep in dep_table.items():
+        if dep.fields.get("status") != "active":
+            continue
+        if dep.fields.get("to_entity_id") not in done_task_ids:
+            continue
+        resolve_deltas.append({
+            "op": "update",
+            "entity_type": "Dependency",
+            "entity_id": dep_id,
+            "fields": {"status": "resolved"},
+            "provenance": {"asserted_by": "agent:cascade"},
+        })
+
+    if not resolve_deltas:
+        return
+
+    approval = Event(
+        id=f"appr_{uuid.uuid4().hex[:12]}",
+        type="human_approval",
+        timestamp=_now(),
+        source="agent:cascade",
+        payload={"deltas": resolve_deltas, "actions": [], "approves": trigger_event_id},
+    )
+    state_copy = project(events)
+    apply_event(state_copy, approval)
+    storage.write_event(approval)
+
+    # Check which downstream tasks are now fully unblocked and notify their owners.
+    for dep_id, dep in dep_table.items():
+        if dep.fields.get("to_entity_id") not in done_task_ids:
+            continue
+        downstream_id = dep.fields.get("from_entity_id", "")
+        downstream = task_table.get(downstream_id)
+        if not downstream or downstream.fields.get("status", "").lower() in _DONE_STATUSES:
+            continue
+        # Check if ALL deps for this downstream task are now resolved.
+        still_blocked = any(
+            d.fields.get("status") == "active"
+            and d.fields.get("from_entity_id") == downstream_id
+            and d.fields.get("to_entity_id") not in done_task_ids
+            for d in dep_table.values()
+        )
+        if still_blocked:
+            continue
+        owner = downstream.fields.get("owner") or "team"
+        notify = {
+            "type": "send_message",
+            "category": "info_request",
+            "payload": {
+                "to": owner,
+                "subject": f"Task '{downstream_id}' is unblocked",
+                "body": f"All upstream dependencies for '{downstream.fields.get('title', downstream_id)}' are now resolved. You can start working on it.",
+            },
+        }
+        _write_outbound_event(notify, source="agent:cascade", source_event_id=approval.id)
+
+
 def _apply_approval(
     proposal: Event,
     events: list[Event],
@@ -314,6 +390,7 @@ def _apply_approval(
     for action in approval.payload["actions"]:
         _write_outbound_event(action, source="agent:approved", source_event_id=approval.id)
 
+    _cascade_done_tasks(deltas, approval.id)
     _auto_review_consequential(approval.id)
     return approval
 

@@ -1660,3 +1660,55 @@ def _thread_of(client, proposal_id):
         if e["type"] == "agent_proposal" and e["id"] == proposal_id:
             return e["payload"].get("thread_id")
     return None
+
+
+# --- dependency cascade -------------------------------------------------------
+
+
+def test_task_done_resolves_downstream_deps(client, monkeypatch):
+    """When a task is marked done, its downstream deps auto-resolve."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "Cascade"})
+    client.post("/events", json=_human_approval(
+        "setup",
+        _delta("create", "Task", "upstream", {"status": "open", "owner": "alice"}),
+        _delta("create", "Task", "downstream", {"status": "open", "owner": "bob"}),
+        _delta("create", "Dependency", "dep-1", {
+            "from_entity_id": "downstream",
+            "to_entity_id": "upstream",
+            "status": "active",
+        }),
+    ))
+
+    # Mark upstream as done via extraction + approval
+    _use_auto_provider(
+        ExtractionResult(deltas=[
+            ProposedDelta("update", "Task", "upstream", {"status": "done"}, "done", 1.0),
+        ]),
+        ApprovalResult([ApprovalResolution("__auto__", "approve", "yes")]),
+    )
+    client.post("/events", json={
+        "id": "note_1", "type": "manual_note", "timestamp": "2025-01-02T00:00:00Z",
+        "source": "tester", "raw_text": "upstream is done",
+    })
+    # Find the proposal, approve it
+    proposals = client.get("/proposals").json()
+    extraction_prop = [p for p in proposals if p["source"] != "review:auto"]
+    assert extraction_prop
+    prop = extraction_prop[0]
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(prop["id"], "approve", "approved")]),
+    )
+    client.post("/events", json={
+        "id": "reply_1", "type": "message_received", "timestamp": "2025-01-02T01:00:00Z",
+        "source": "pm@test.com", "raw_text": "approved",
+        "payload": {"thread_id": prop["payload"]["thread_id"]},
+    })
+
+    state = client.get("/state").json()
+    assert state["Dependency"]["dep-1"]["fields"]["status"] == "resolved"
+    assert any(
+        e["type"] == "message_sent" and "unblocked" in e.get("payload", {}).get("payload", {}).get("subject", "")
+        for e in client.get("/events").json()
+    )

@@ -58,7 +58,7 @@ from aipm.conflicts import (
     state_inconsistencies,
 )
 from aipm.conversation import build_message_prompt
-from aipm.entities import outbound_event_type
+from aipm.entities import DONE_STATUSES, outbound_event_type
 from aipm.events import RAW_INPUT_TYPES, Event
 from aipm.extraction import build_prompt, filter_grounded
 from aipm.extraction.providers import ExtractionProvider
@@ -236,29 +236,22 @@ def _ask_author_to_clarify(
     )
 
 
-def _auto_review_consequential(trigger_event_id: str) -> None:
-    """Run consequential-only review after an approval changed state.
-
-    Fires raise_flag / escalate proposals if new issues surfaced. Skips
-    info_request pings entirely — those stay in manual `aipm review`.
-    """
-    events = storage.read_events()
-    state = project(events)
-    result = review_consequential_only(state)
-    if not result.actions:
+def _propose_review_actions(actions: list[dict], source: str, source_event_id: str) -> None:
+    """Create a review proposal from consequential actions. Shared by auto-review and /review-state."""
+    if not actions:
         return
     actions_with_prov = [
         {**a, "provenance": {"asserted_by": "review:rules"}}
-        for a in result.actions
+        for a in actions
     ]
     proposal_event = Event(
         id=f"prop_{uuid.uuid4().hex[:12]}",
         type="agent_proposal",
         timestamp=_now(),
-        source="review:auto",
+        source=source,
         payload={
             "provider": "review:rules",
-            "source_event_id": trigger_event_id,
+            "source_event_id": source_event_id,
             "deltas": [],
             "actions": actions_with_prov,
             "thread_id": _new_thread_id(),
@@ -268,25 +261,28 @@ def _auto_review_consequential(trigger_event_id: str) -> None:
     _ask_for_approval(proposal_event, storage.read_events())
 
 
-_DONE_STATUSES = frozenset({"done", "completed", "closed"})
+def _auto_review_consequential(state: ProjectState, trigger_event_id: str) -> None:
+    """Run consequential-only review after an approval changed state."""
+    result = review_consequential_only(state)
+    _propose_review_actions(result.actions, "review:auto", trigger_event_id)
 
 
-def _cascade_done_tasks(deltas: list[dict], trigger_event_id: str) -> None:
+def _cascade_done_tasks(deltas: list[dict], state: ProjectState, trigger_event_id: str) -> None:
     """When a task is marked done, resolve its downstream deps and notify unblocked owners."""
     done_task_ids = {
         d["entity_id"] for d in deltas
         if d.get("entity_type") == "Task"
-        and d.get("fields", {}).get("status", "").lower() in _DONE_STATUSES
+        and d.get("fields", {}).get("status", "").lower() in DONE_STATUSES
     }
     if not done_task_ids:
         return
 
-    events = storage.read_events()
-    state = project(events)
     dep_table = state.entities.get("Dependency", {})
     task_table = state.entities.get("Task", {})
 
     resolve_deltas: list[dict] = []
+    # Single pass: collect deps to resolve and group by downstream task.
+    downstream_resolved: dict[str, list[str]] = {}  # downstream_id -> [dep_ids resolved now]
     for dep_id, dep in dep_table.items():
         if dep.fields.get("status") != "active":
             continue
@@ -299,6 +295,8 @@ def _cascade_done_tasks(deltas: list[dict], trigger_event_id: str) -> None:
             "fields": {"status": "resolved"},
             "provenance": {"asserted_by": "agent:cascade"},
         })
+        downstream_id = dep.fields.get("from_entity_id", "")
+        downstream_resolved.setdefault(downstream_id, []).append(dep_id)
 
     if not resolve_deltas:
         return
@@ -310,42 +308,38 @@ def _cascade_done_tasks(deltas: list[dict], trigger_event_id: str) -> None:
         source="agent:cascade",
         payload={"deltas": resolve_deltas, "actions": [], "approves": trigger_event_id},
     )
-    state_copy = project(events)
-    apply_event(state_copy, approval)
+    apply_event(state, approval)
     storage.write_event(approval)
 
-    # Check which downstream tasks are now fully unblocked and notify their owners.
-    for dep_id, dep in dep_table.items():
-        if dep.fields.get("to_entity_id") not in done_task_ids:
-            continue
-        downstream_id = dep.fields.get("from_entity_id", "")
+    # Notify owners of downstream tasks that are now fully unblocked.
+    for downstream_id in downstream_resolved:
         downstream = task_table.get(downstream_id)
-        if not downstream or downstream.fields.get("status", "").lower() in _DONE_STATUSES:
+        if not downstream or downstream.fields.get("status", "").lower() in DONE_STATUSES:
             continue
-        # Check if ALL deps for this downstream task are now resolved.
         still_blocked = any(
             d.fields.get("status") == "active"
             and d.fields.get("from_entity_id") == downstream_id
-            and d.fields.get("to_entity_id") not in done_task_ids
             for d in dep_table.values()
         )
         if still_blocked:
             continue
         owner = downstream.fields.get("owner") or "team"
-        notify = {
-            "type": "send_message",
-            "category": "info_request",
-            "payload": {
+        _write_outbound_event(
+            {"type": "send_message", "category": "info_request", "payload": {
                 "to": owner,
                 "subject": f"Task '{downstream_id}' is unblocked",
                 "body": f"All upstream dependencies for '{downstream.fields.get('title', downstream_id)}' are now resolved. You can start working on it.",
-            },
-        }
-        _write_outbound_event(notify, source="agent:cascade", source_event_id=approval.id)
+            }},
+            source="agent:cascade", source_event_id=approval.id,
+        )
 
 
 def _auto_escalate_flag(action: dict, trigger_event_id: str, state: ProjectState) -> None:
-    """When a flag is raised, auto-notify management (PM + tech-lead)."""
+    """When a flag is raised, auto-notify management (PM + tech-lead).
+
+    Uses escalate_to_management (consequential) — no extra approval needed
+    because the PM already approved the raise_flag that triggers this.
+    """
     meta = state.meta
     recipients = [r for r in [meta.get("pm"), meta.get("tech_lead")] if r]
     if not recipients:
@@ -354,17 +348,67 @@ def _auto_escalate_flag(action: dict, trigger_event_id: str, state: ProjectState
     entity_id = payload.get("entity_id", "unknown")
     reason = payload.get("reason", "No details")
     escalation = {
-        "type": "send_message",
-        "category": "info_request",
+        "type": "escalate_to_management",
+        "category": "consequential",
         "payload": {
             "to": ", ".join(recipients),
-            "subject": f"Flag escalation: {entity_id}",
-            "body": f"A flag has been raised and approved. {reason}",
-            "purpose": "escalation",
-            "flag_entity_id": entity_id,
+            "entity_id": entity_id,
+            "reason": f"Flag raised and approved. {reason}",
         },
     }
     _write_outbound_event(escalation, source="agent:escalate-flag", source_event_id=trigger_event_id)
+
+
+_RESOLVED_RISK_STATUSES = frozenset({"resolved", "closed", "mitigated", "accepted", "retired"})
+_HIGH_SEVERITIES = frozenset({"high", "critical"})
+
+
+def _auto_resolve_cleared_flags(state: ProjectState, trigger_event_id: str) -> None:
+    """Auto-resolve open flags whose underlying condition no longer holds.
+
+    Currently handles `unowned_high_risk`: if the risk now has an owner,
+    or its severity dropped below high, or its status is terminal, the flag
+    is no longer warranted and is resolved automatically.
+    """
+    for flag in state.open_flags():
+        rule = flag.payload.get("review_rule", "")
+        entity_id = flag.payload.get("entity_id", "")
+        if rule == "unowned_high_risk" and entity_id:
+            risk = state.get("Risk", entity_id)
+            if not risk:
+                continue
+            has_owner = bool(risk.fields.get("owner") or risk.fields.get("assignee"))
+            severity_low = (risk.fields.get("severity") or "").lower() not in _HIGH_SEVERITIES
+            status_resolved = (risk.fields.get("status") or "").lower() in _RESOLVED_RISK_STATUSES
+            if has_owner or severity_low or status_resolved:
+                resolve_action = {
+                    "type": "resolve_flag",
+                    "category": "consequential",
+                    "payload": {
+                        "entity_id": entity_id,
+                        "reason": "Underlying condition cleared (owner assigned or risk resolved)",
+                    },
+                    "provenance": {"asserted_by": "agent:auto-resolve"},
+                }
+                resolve_event = Event(
+                    id=f"appr_{uuid.uuid4().hex[:12]}",
+                    type="human_approval",
+                    timestamp=_now(),
+                    source="agent:auto-resolve-flag",
+                    payload={
+                        "deltas": [],
+                        "actions": [resolve_action],
+                        "auto_resolved": True,
+                        "trigger_event_id": trigger_event_id,
+                    },
+                )
+                apply_event(state, resolve_event)
+                storage.write_event(resolve_event)
+                _write_outbound_event(
+                    resolve_action,
+                    source="agent:auto-resolve-flag",
+                    source_event_id=resolve_event.id,
+                )
 
 
 def _apply_approval(
@@ -415,8 +459,9 @@ def _apply_approval(
         if action.get("type") == "raise_flag":
             _auto_escalate_flag(action, approval.id, state)
 
-    _cascade_done_tasks(deltas, approval.id)
-    _auto_review_consequential(approval.id)
+    _cascade_done_tasks(deltas, state, approval.id)
+    _auto_resolve_cleared_flags(state, approval.id)
+    _auto_review_consequential(state, approval.id)
     return approval
 
 
@@ -1508,26 +1553,11 @@ def review_state_endpoint() -> dict:
 
     proposal = None
     if consequential_actions:
-        actions_with_prov = [
-            {**a, "provenance": {"asserted_by": "review:rules"}}
-            for a in consequential_actions
-        ]
-        proposal_event = Event(
-            id=f"prop_{uuid.uuid4().hex[:12]}",
-            type="agent_proposal",
-            timestamp=_now(),
-            source="review:rules",
-            payload={
-                "provider": "review:rules",
-                "source_event_id": "review-state",
-                "deltas": [],
-                "actions": actions_with_prov,
-                "thread_id": _new_thread_id(),
-            },
-        )
-        storage.write_event(proposal_event)
-        proposal = asdict(proposal_event)
-        _ask_for_approval(proposal_event, storage.read_events())
+        _propose_review_actions(consequential_actions, "review:rules", "review-state")
+        # Return the proposal we just wrote for the response.
+        proposals = _pending_proposals(storage.read_events())
+        if proposals:
+            proposal = asdict(proposals[-1])
 
     return {"issues": issues, "executed": executed, "proposal": proposal}
 

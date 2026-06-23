@@ -11,14 +11,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from aipm.entities import DONE_STATUSES
 from aipm.state import ProjectState
 
 # How much worse each severity tier is relative to "low". Used to detect
 # downgrade: if the proposed severity ranks lower than the current one,
 # that's unusual without an accompanying resolution.
 _SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2, "critical": 3}
-
-_DONE_STATUSES = {"done", "completed", "closed"}
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -72,9 +71,9 @@ def state_inconsistencies(state: ProjectState) -> list[ConflictWarning]:
             continue
         downstream = task_table.get(dep.fields.get("from_entity_id", ""))
         upstream = task_table.get(dep.fields.get("to_entity_id", ""))
-        if not downstream or downstream.fields.get("status") not in _DONE_STATUSES:
+        if not downstream or downstream.fields.get("status") not in DONE_STATUSES:
             continue
-        if upstream and upstream.fields.get("status") in _DONE_STATUSES:
+        if upstream and upstream.fields.get("status") in DONE_STATUSES:
             continue
         upstream_status = upstream.fields.get("status", "missing") if upstream else "missing"
         warnings.append(ConflictWarning(
@@ -150,7 +149,7 @@ def _check_deadline(op: str, entity_id: str, fields: dict, state: ProjectState) 
 
 def _check_task_done(op: str, entity_id: str, fields: dict, state: ProjectState) -> ConflictWarning | None:
     """Flag if a task is marked done while it has an active upstream dependency."""
-    if fields.get("status") not in _DONE_STATUSES:
+    if fields.get("status") not in DONE_STATUSES:
         return None
 
     dep_table = state.entities.get("Dependency", {})
@@ -163,7 +162,7 @@ def _check_task_done(op: str, entity_id: str, fields: dict, state: ProjectState)
             continue
         upstream_id = dep.fields.get("to_entity_id", "")
         upstream = task_table.get(upstream_id)
-        if upstream and upstream.fields.get("status") not in _DONE_STATUSES:
+        if upstream and upstream.fields.get("status") not in DONE_STATUSES:
             return ConflictWarning(
                 type="task_done_with_open_dep",
                 entity_id=entity_id,

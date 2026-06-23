@@ -1746,14 +1746,12 @@ def test_flag_lifecycle_raise_escalate_resolve(client, monkeypatch):
     events = client.get("/events").json()
     # Flag was raised
     assert any(e["type"] == "flag_raised" for e in events)
-    # Auto-escalation sent to management
-    escalation_msgs = [
+    # Auto-escalation reported to management
+    escalation_events = [
         e for e in events
-        if e["type"] == "message_sent"
-        and "escalation" in str(e.get("payload", {}).get("payload", {}).get("purpose", ""))
+        if e["type"] == "report_to_management"
     ]
-    assert escalation_msgs
-    assert "cto@co.com" in escalation_msgs[0]["payload"]["payload"]["to"]
+    assert escalation_events
 
     # Now resolve: assign an owner to the risk (so the unowned check passes)
     # and record a resolve_flag action.
@@ -1777,5 +1775,75 @@ def test_flag_lifecycle_raise_escalate_resolve(client, monkeypatch):
     )
 
     # Review should no longer re-flag this risk (owner assigned + flag resolved)
+    review2 = client.post("/review-state").json()
+    assert review2["proposal"] is None
+
+
+def test_flag_auto_resolves_when_owner_assigned(client, monkeypatch):
+    """When a risk gets an owner via the approval flow, its unowned_high_risk flag auto-resolves."""
+    monkeypatch.setenv("AIPM_AUTO_EXTRACT", "1")
+    client.post("/project", json={"name": "AutoResolve", "pm": "pm@co.com", "tech_lead": "cto@co.com"})
+    # Create unowned high-severity risk
+    client.post("/events", json=_human_approval(
+        "setup",
+        _delta("create", "Risk", "data-leak", {"severity": "critical", "status": "open"}),
+    ))
+
+    # Review raises a flag
+    review = client.post("/review-state").json()
+    assert review["proposal"] is not None
+    prop = review["proposal"]
+
+    # PM approves the flag (via reply-based approval flow)
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(prop["id"], "approve", "raise it")]),
+    )
+    client.post("/events", json={
+        "id": "reply_ar1", "type": "message_received", "timestamp": "2025-01-02T00:00:00Z",
+        "source": "pm@co.com", "raw_text": "Yes, raise it.",
+        "payload": {"thread_id": prop["payload"]["thread_id"]},
+    })
+
+    # Flag is open
+    state = client.get("/state").json()
+    open_flags = [a for a in state.get("actions", []) if a["type"] == "raise_flag"]
+    assert open_flags
+
+    # Submit a note that extracts an owner assignment
+    _use_auto_provider(ExtractionResult(deltas=[
+        ProposedDelta("update", "Risk", "data-leak", {"owner": "alice"}, "Alice will own"),
+    ]))
+    client.post("/events", json={
+        "id": "note_assign", "type": "manual_note", "timestamp": "2025-01-03T00:00:00Z",
+        "source": "pm@co.com", "raw_text": "Alice will own the data leak risk.",
+    })
+
+    # Find the extraction proposal (exclude auto-review proposals)
+    proposals = client.get("/proposals").json()
+    pending = [p for p in proposals if p["source"] != "review:auto"]
+    assert pending, "Expected a pending proposal for the owner assignment"
+    assign_prop = pending[0]
+
+    # Approve the assignment via reply
+    _use_auto_provider(
+        ExtractionResult(),
+        ApprovalResult([ApprovalResolution(assign_prop["id"], "approve", "assign alice")]),
+    )
+    client.post("/events", json={
+        "id": "reply_ar2", "type": "message_received", "timestamp": "2025-01-03T01:00:00Z",
+        "source": "pm@co.com", "raw_text": "Yes, assign Alice.",
+        "payload": {"thread_id": assign_prop["payload"]["thread_id"]},
+    })
+
+    # Flag should be auto-resolved
+    state2 = client.get("/state").json()
+    resolve_actions = [
+        a for a in state2.get("actions", [])
+        if a["type"] == "resolve_flag" and a["payload"]["entity_id"] == "data-leak"
+    ]
+    assert resolve_actions
+
+    # Review should not re-flag (owner assigned + flag resolved)
     review2 = client.post("/review-state").json()
     assert review2["proposal"] is None

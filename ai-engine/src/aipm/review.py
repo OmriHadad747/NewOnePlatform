@@ -181,7 +181,14 @@ def _check_unowned_high_risks(state: ProjectState, result: ReviewResult) -> None
 
 def _check_overdue_deadlines(state: ProjectState, result: ReviewResult, now: datetime) -> None:
     today = now.date()
+    already_escalated = {
+        a.payload.get("entity_id")
+        for a in state.actions
+        if a.type == "escalate_to_management"
+    }
     for did, entity in state.entities.get("Deadline", {}).items():
+        if did in already_escalated:
+            continue
         due_date_str = entity.fields.get("due_date")
         if not due_date_str:
             continue

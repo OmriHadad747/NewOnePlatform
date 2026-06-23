@@ -27,14 +27,18 @@ class ProjectState:
         return self.entities.get(entity_type, {}).get(entity_id)
 
     def open_flags(self) -> list[Action]:
-        """Flags that were raised but not yet resolved."""
-        resolved_entity_ids = {
-            a.payload.get("entity_id")
-            for a in self.actions
-            if a.type == "resolve_flag"
-        }
-        return [
-            a for a in self.actions
-            if a.type == "raise_flag"
-            and a.payload.get("entity_id") not in resolved_entity_ids
-        ]
+        """Flags that were raised but not yet resolved.
+
+        Timeline-aware: walks actions in order so a raise→resolve→re-raise
+        correctly shows the re-raised flag as open.
+        """
+        open_by_entity: dict[str, Action] = {}
+        for a in self.actions:
+            eid = a.payload.get("entity_id")
+            if not eid:
+                continue
+            if a.type == "raise_flag":
+                open_by_entity[eid] = a
+            elif a.type == "resolve_flag" and eid in open_by_entity:
+                del open_by_entity[eid]
+        return list(open_by_entity.values())

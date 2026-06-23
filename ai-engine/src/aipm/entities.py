@@ -25,6 +25,8 @@ ENTITY_TYPES = {
 # escalating to management, raising flags) require human approval.
 ACTION_CATEGORIES = {"info_request", "consequential"}
 
+DONE_STATUSES = frozenset({"done", "completed", "closed"})
+
 # Action types the agent may propose, and the outbound event type that
 # records each one's (stubbed) execution -- immediately for `info_request`
 # actions, or once a `human_approval` applies a `consequential` one. See

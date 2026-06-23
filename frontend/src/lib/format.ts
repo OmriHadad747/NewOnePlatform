@@ -51,7 +51,7 @@ export function taskStatus(raw: unknown): StatusView {
   if (DONE.has(s)) return { label: 'Done', tone: 'green' }
   if (BLOCK.has(s)) return { label: titlecase(raw), tone: 'red' }
   if (PROG.has(s)) return { label: 'In progress', tone: 'blue' }
-  if (s === 'not_started' || s === 'todo' || s === 'planned' || s === 'new')
+  if (['not_started', 'todo', 'planned', 'new', 'open', 'backlog'].includes(s))
     return { label: 'Not started', tone: 'muted' }
   return { label: titlecase(raw), tone: 'accent' }
 }

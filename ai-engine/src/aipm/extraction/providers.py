@@ -37,6 +37,10 @@ class ExtractionProvider(Protocol):
         """Compose the agent's next short (info_request) reply in a thread."""
         ...
 
+    def answer_question(self, prompt: ExtractionPrompt) -> str:
+        """Answer a stakeholder's free-language question as plain prose."""
+        ...
+
 
 @dataclass(frozen=True)
 class ProviderDescriptor:

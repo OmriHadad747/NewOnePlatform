@@ -19,8 +19,11 @@ with its own setup/build:
 - **`cli/`** -- thin client for `backend`'s API; the Phase 1 "surface" for
   feeding in events and inspecting/replaying project state. See
   [`cli/README.md`](cli/README.md).
-- **`frontend/`** -- dashboard UI (planned, no directory yet; will talk to
-  `backend` the same way `cli/` does).
+- **`frontend/`** -- production-quality dashboard UI (React + Vite + TS +
+  Tailwind), talking to `backend` the same way `cli/` does. A warm,
+  role-based experience (team member / manager / executive) plus a live
+  demo console, presented as a named agent ("Shlomi"). See
+  [`frontend/README.md`](frontend/README.md).
 
 ## Phase 1
 
